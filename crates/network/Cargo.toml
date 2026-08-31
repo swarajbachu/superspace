@@ -11,12 +11,16 @@ superspace-protocol = { path = "../protocol" }
 blake3.workspace = true
 fs2.workspace = true
 mdns-sd.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
 snow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

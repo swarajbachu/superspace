@@ -107,6 +107,7 @@ pub enum PairingError {
 /// Initiating side of the three-message verified Noise XX handshake.
 pub struct PairingInitiator {
     state: Option<HandshakeState>,
+    local_payload: Vec<u8>,
 }
 
 impl PairingInitiator {
@@ -116,10 +117,26 @@ impl PairingInitiator {
     ///
     /// Returns [`PairingError`] when Noise initialization fails.
     pub fn new(identity: &DeviceKeypair) -> Result<Self, PairingError> {
+        Self::new_with_payload(identity, Vec::new())
+    }
+
+    /// Start pairing and bind public transport metadata into the authenticated transcript.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PairingError`] when Noise initialization fails or the payload is too large.
+    pub fn new_with_payload(
+        identity: &DeviceKeypair,
+        local_payload: Vec<u8>,
+    ) -> Result<Self, PairingError> {
+        validate_payload(&local_payload)?;
         let state = builder()?
             .local_private_key(identity.private_key())?
             .build_initiator()?;
-        Ok(Self { state: Some(state) })
+        Ok(Self {
+            state: Some(state),
+            local_payload,
+        })
     }
 
     /// Produce the first handshake packet.
@@ -129,7 +146,7 @@ impl PairingInitiator {
     /// Returns an error when called after the handshake has already finished.
     pub fn initial_message(&mut self) -> Result<Vec<u8>, PairingError> {
         let state = self.state.as_mut().ok_or(PairingError::InvalidState)?;
-        write_handshake(state)
+        write_handshake(state, &self.local_payload)
     }
 
     /// Consume the responder packet, produce the final packet, and enter transport mode.
@@ -142,13 +159,13 @@ impl PairingInitiator {
     /// Returns an error for malformed packets or invalid handshake order.
     pub fn finish(mut self, response: &[u8]) -> Result<InitiatorFinish, PairingError> {
         let mut state = self.state.take().ok_or(PairingError::InvalidState)?;
-        read_handshake(&mut state, response)?;
+        let remote_payload = read_handshake(&mut state, response)?;
         let code = pairing_code(state.get_handshake_hash());
         let remote_static_key = state
             .get_remote_static()
             .ok_or(PairingError::InvalidState)?
             .to_vec();
-        let confirmation = write_handshake(&mut state)?;
+        let confirmation = write_handshake(&mut state, &self.local_payload)?;
         let channel = SecureChannel {
             state: state.into_transport_mode()?,
         };
@@ -156,6 +173,7 @@ impl PairingInitiator {
             confirmation,
             code,
             remote_static_key,
+            remote_payload,
             channel,
         })
     }
@@ -169,6 +187,8 @@ pub struct InitiatorFinish {
     pub code: PairingCode,
     /// Responder identity to persist only after matching confirmation.
     pub remote_static_key: Vec<u8>,
+    /// Authenticated public metadata supplied by the responder.
+    pub remote_payload: Vec<u8>,
     /// Encrypted channel ready after confirmation is transmitted.
     pub channel: SecureChannel,
 }
@@ -177,6 +197,8 @@ pub struct InitiatorFinish {
 pub struct PairingResponder {
     state: Option<HandshakeState>,
     code: Option<PairingCode>,
+    local_payload: Vec<u8>,
+    remote_payload: Vec<u8>,
 }
 
 impl PairingResponder {
@@ -186,12 +208,27 @@ impl PairingResponder {
     ///
     /// Returns [`PairingError`] when Noise initialization fails.
     pub fn new(identity: &DeviceKeypair) -> Result<Self, PairingError> {
+        Self::new_with_payload(identity, Vec::new())
+    }
+
+    /// Prepare a responder and bind public transport metadata into the authenticated transcript.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PairingError`] when Noise initialization fails or the payload is too large.
+    pub fn new_with_payload(
+        identity: &DeviceKeypair,
+        local_payload: Vec<u8>,
+    ) -> Result<Self, PairingError> {
+        validate_payload(&local_payload)?;
         let state = builder()?
             .local_private_key(identity.private_key())?
             .build_responder()?;
         Ok(Self {
             state: Some(state),
             code: None,
+            local_payload,
+            remote_payload: Vec::new(),
         })
     }
 
@@ -202,8 +239,8 @@ impl PairingResponder {
     /// Returns an error for malformed packets or invalid handshake order.
     pub fn respond(&mut self, initial: &[u8]) -> Result<ResponderReply, PairingError> {
         let state = self.state.as_mut().ok_or(PairingError::InvalidState)?;
-        read_handshake(state, initial)?;
-        let message = write_handshake(state)?;
+        self.remote_payload = read_handshake(state, initial)?;
+        let message = write_handshake(state, &self.local_payload)?;
         let code = pairing_code(state.get_handshake_hash());
         self.code = Some(code);
         Ok(ResponderReply { message, code })
@@ -218,26 +255,54 @@ impl PairingResponder {
     ///
     /// Returns an error for code mismatch, malformed packets, or invalid handshake order.
     pub fn finish(
-        mut self,
+        self,
         confirmation: &[u8],
         expected_code: PairingCode,
     ) -> Result<(Vec<u8>, SecureChannel), PairingError> {
+        let outcome = self.finish_with_payload(confirmation, expected_code)?;
+        Ok((outcome.remote_static_key, outcome.channel))
+    }
+
+    /// Finish pairing and return the initiator's authenticated public metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for code mismatch, malformed packets, or invalid handshake order.
+    pub fn finish_with_payload(
+        mut self,
+        confirmation: &[u8],
+        expected_code: PairingCode,
+    ) -> Result<ResponderFinish, PairingError> {
         if self.code != Some(expected_code) {
             return Err(PairingError::InvalidState);
         }
         let mut state = self.state.take().ok_or(PairingError::InvalidState)?;
-        read_handshake(&mut state, confirmation)?;
+        let confirmed_payload = read_handshake(&mut state, confirmation)?;
+        if confirmed_payload != self.remote_payload {
+            return Err(PairingError::InvalidState);
+        }
         let remote_static_key = state
             .get_remote_static()
             .ok_or(PairingError::InvalidState)?
             .to_vec();
-        Ok((
+        Ok(ResponderFinish {
             remote_static_key,
-            SecureChannel {
+            remote_payload: confirmed_payload,
+            channel: SecureChannel {
                 state: state.into_transport_mode()?,
             },
-        ))
+        })
     }
+}
+
+/// Authenticated responder result including bound transport metadata.
+pub struct ResponderFinish {
+    /// Initiator Noise static identity.
+    pub remote_static_key: Vec<u8>,
+    /// Authenticated public metadata supplied by the initiator.
+    pub remote_payload: Vec<u8>,
+    /// Encrypted channel ready for application frames.
+    pub channel: SecureChannel,
 }
 
 /// Response packet and the code displayed by the receiving device.
@@ -290,20 +355,30 @@ fn builder() -> Result<Builder<'static>, PairingError> {
     Ok(Builder::new(parameters))
 }
 
-fn write_handshake(state: &mut HandshakeState) -> Result<Vec<u8>, PairingError> {
+fn write_handshake(state: &mut HandshakeState, payload: &[u8]) -> Result<Vec<u8>, PairingError> {
+    validate_payload(payload)?;
     let mut output = vec![0; MAX_MESSAGE_SIZE];
-    let length = state.write_message(&[], &mut output)?;
+    let length = state.write_message(payload, &mut output)?;
     output.truncate(length);
     Ok(output)
 }
 
-fn read_handshake(state: &mut HandshakeState, message: &[u8]) -> Result<(), PairingError> {
+fn read_handshake(state: &mut HandshakeState, message: &[u8]) -> Result<Vec<u8>, PairingError> {
     if message.len() > MAX_MESSAGE_SIZE {
         return Err(PairingError::MessageTooLarge);
     }
-    let mut payload = [0_u8; 1];
-    state.read_message(message, &mut payload)?;
-    Ok(())
+    let mut payload = vec![0_u8; MAX_MESSAGE_SIZE];
+    let length = state.read_message(message, &mut payload)?;
+    payload.truncate(length);
+    Ok(payload)
+}
+
+fn validate_payload(payload: &[u8]) -> Result<(), PairingError> {
+    if payload.len() > MAX_MESSAGE_SIZE / 2 {
+        Err(PairingError::MessageTooLarge)
+    } else {
+        Ok(())
+    }
 }
 
 fn pairing_code(handshake_hash: &[u8]) -> PairingCode {
@@ -389,5 +464,25 @@ mod tests {
         let debug = format!("{identity:?}");
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains(&hex_preview(identity.private_key())));
+    }
+
+    #[test]
+    fn pairing_authenticates_transport_metadata() {
+        let first = DeviceKeypair::generate().expect("first identity");
+        let second = DeviceKeypair::generate().expect("second identity");
+        let mut initiator =
+            PairingInitiator::new_with_payload(&first, b"first certificate".to_vec())
+                .expect("initiator");
+        let mut responder =
+            PairingResponder::new_with_payload(&second, b"second certificate".to_vec())
+                .expect("responder");
+        let initial = initiator.initial_message().expect("initial");
+        let reply = responder.respond(&initial).expect("reply");
+        let initiated = initiator.finish(&reply.message).expect("initiated");
+        assert_eq!(initiated.remote_payload, b"second certificate");
+        let finish = responder
+            .finish_with_payload(&initiated.confirmation, reply.code)
+            .expect("responded");
+        assert_eq!(finish.remote_payload, b"first certificate");
     }
 }
