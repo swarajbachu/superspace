@@ -17,6 +17,8 @@ superspace-core = { path = "../core" }
 superspace-calculator = { path = "../calculator" }
 superspace-files = { path = "../files" }
 superspace-platform = { path = "../platform" }
+superspace-storage = { path = "../storage" }
+superspace-sync = { path = "../sync" }
 unicode-segmentation.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

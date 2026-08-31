@@ -48,6 +48,8 @@ pub enum PaletteEntryKind {
     Command,
     /// An inline calculation or conversion.
     Calculation,
+    /// A durable clipboard-history item.
+    Clipboard,
 }
 
 impl PaletteEntryKind {
@@ -59,6 +61,7 @@ impl PaletteEntryKind {
             Self::File => "File",
             Self::Command => "Command",
             Self::Calculation => "Copy result",
+            Self::Clipboard => "Clipboard",
         }
     }
 }

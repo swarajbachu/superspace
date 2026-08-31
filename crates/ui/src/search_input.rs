@@ -55,6 +55,7 @@ pub(crate) struct InputChanged;
 pub(crate) struct SearchInput {
     focus_handle: FocusHandle,
     content: SharedString,
+    placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -68,6 +69,7 @@ impl SearchInput {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
+            placeholder: "Search apps, files, and tools…".into(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -88,6 +90,11 @@ impl SearchInput {
         self.marked_range = None;
         cx.emit(InputChanged);
         cx.notify();
+    }
+
+    pub(crate) fn reset(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = placeholder.into();
+        self.clear(cx);
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -435,10 +442,7 @@ impl Element for SearchTextElement {
         let input = self.input.read(cx);
         let colors = theme::for_kind(theme::ThemeKind::default());
         let (text, color) = if input.content.is_empty() {
-            (
-                SharedString::from("Search apps, files, and commands…"),
-                colors.muted,
-            )
+            (input.placeholder.clone(), colors.muted)
         } else {
             (input.content.clone(), colors.text)
         };

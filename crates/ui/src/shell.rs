@@ -14,10 +14,19 @@ use superspace_platform::AppDescriptor;
 
 use crate::{
     ActionItem, PaletteEntry, PaletteEntryKind, PaletteEvent, PaletteKey, PaletteMode,
-    PaletteModel, motion,
+    PaletteModel,
+    clipboard_history::ClipboardHistory,
+    motion,
     search_input::{InputChanged, SearchInput},
     theme,
 };
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PaletteSurface {
+    #[default]
+    Launcher,
+    Clipboard,
+}
 
 /// Main command palette state.
 pub struct Palette {
@@ -25,6 +34,7 @@ pub struct Palette {
     focus: FocusHandle,
     search_input: Entity<SearchInput>,
     results_scroll: ScrollHandle,
+    surface: PaletteSurface,
     notice: Option<String>,
     application_count: usize,
     applications: HashMap<String, AppDescriptor>,
@@ -32,6 +42,7 @@ pub struct Palette {
     file_index: Option<superspace_files::FileIndex>,
     files: HashMap<String, PathBuf>,
     calculations: HashMap<String, String>,
+    clipboard: Option<ClipboardHistory>,
     theme_kind: theme::ThemeKind,
     preferences: LauncherPreferences,
     preferences_path: PathBuf,
@@ -52,7 +63,7 @@ impl Palette {
                 .into_iter()
                 .map(|application| (format!("app:{}", application.id), application))
                 .collect::<HashMap<_, _>>();
-        let entries = applications
+        let mut entries = applications
             .iter()
             .map(|(id, application)| {
                 let mut entry = PaletteEntry {
@@ -83,7 +94,14 @@ impl Palette {
             })
             .collect::<Vec<_>>();
         let application_count = applications.len();
+        entries.push(builtin_entry(
+            "builtin:clipboard",
+            "Clipboard History",
+            "Search, pin, restore, and remove copied items",
+            "open-clipboard",
+        ));
         let base_entries = entries.clone();
+        let clipboard = ClipboardHistory::open(&data_root()).ok();
 
         cx.subscribe(&search_input, |palette, input, _: &InputChanged, cx| {
             palette.model.set_query(input.read(cx).text().to_owned());
@@ -99,6 +117,7 @@ impl Palette {
             focus,
             search_input,
             results_scroll,
+            surface: PaletteSurface::Launcher,
             notice: None,
             application_count,
             applications,
@@ -106,6 +125,7 @@ impl Palette {
             file_index: open_file_index(),
             files: HashMap::new(),
             calculations: HashMap::new(),
+            clipboard,
             theme_kind: theme::ThemeKind::default(),
             preferences,
             preferences_path,
@@ -160,6 +180,14 @@ impl Palette {
             cx.stop_propagation();
             return;
         }
+        if key == PaletteKey::Escape
+            && self.model.mode() == PaletteMode::Results
+            && self.surface != PaletteSurface::Launcher
+        {
+            self.enter_surface(PaletteSurface::Launcher, cx);
+            cx.stop_propagation();
+            return;
+        }
         let palette_event = self.model.key(key);
         self.results_scroll
             .scroll_to_item(self.model.selected_index());
@@ -170,7 +198,59 @@ impl Palette {
 
     /// Returns whether the palette should close after the action.
     fn invoke(&mut self, entry_id: &str, action_id: &str, cx: &mut Context<Self>) -> bool {
-        if action_id == "launch" {
+        if action_id == "open-clipboard" {
+            self.enter_surface(PaletteSurface::Clipboard, cx);
+            false
+        } else if action_id == "restore-clipboard" {
+            match self
+                .clipboard
+                .as_ref()
+                .ok_or_else(|| "clipboard history is unavailable".to_owned())
+                .and_then(|history| history.restore(entry_id))
+            {
+                Ok(()) => true,
+                Err(error) => {
+                    self.notice = Some(format!("Could not restore clipboard item: {error}"));
+                    false
+                }
+            }
+        } else if action_id == "toggle-clipboard-pin" {
+            match self
+                .clipboard
+                .as_ref()
+                .ok_or_else(|| "clipboard history is unavailable".to_owned())
+                .and_then(|history| history.toggle_pin(entry_id))
+            {
+                Ok(pinned) => {
+                    self.notice = Some(if pinned {
+                        "Pinned clipboard item".into()
+                    } else {
+                        "Unpinned clipboard item".into()
+                    });
+                    self.refresh_results();
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Could not update clipboard item: {error}"))
+                }
+            }
+            false
+        } else if action_id == "remove-clipboard" {
+            match self
+                .clipboard
+                .as_ref()
+                .ok_or_else(|| "clipboard history is unavailable".to_owned())
+                .and_then(|history| history.remove(entry_id))
+            {
+                Ok(()) => {
+                    self.notice = Some("Removed clipboard item".into());
+                    self.refresh_results();
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Could not remove clipboard item: {error}"))
+                }
+            }
+            false
+        } else if action_id == "launch" {
             let application = self.applications.get(entry_id).cloned();
             application.is_some_and(|application| match application.launch() {
                 Ok(_) => {
@@ -256,6 +336,22 @@ impl Palette {
     fn refresh_results(&mut self) {
         self.files.clear();
         self.calculations.clear();
+        if self.surface == PaletteSurface::Clipboard {
+            let query = self.model.query().trim().to_owned();
+            let entries = self
+                .clipboard
+                .as_mut()
+                .ok_or_else(|| "clipboard history is unavailable".to_owned())
+                .and_then(|history| history.search(&query));
+            match entries {
+                Ok(entries) => self.model.replace_entries(entries),
+                Err(error) => {
+                    self.notice = Some(format!("Could not load clipboard history: {error}"));
+                    self.model.replace_entries(Vec::new());
+                }
+            }
+            return;
+        }
         let query = self.model.query().trim();
         let matches = if query.chars().count() >= 2 {
             self.file_index
@@ -312,6 +408,18 @@ impl Palette {
         }));
         self.model.replace_entries(entries);
     }
+
+    fn enter_surface(&mut self, surface: PaletteSurface, cx: &mut Context<Self>) {
+        self.surface = surface;
+        self.notice = None;
+        let placeholder = match surface {
+            PaletteSurface::Launcher => "Search apps, files, and tools…",
+            PaletteSurface::Clipboard => "Search clipboard history…",
+        };
+        self.search_input
+            .update(cx, |input, cx| input.reset(placeholder, cx));
+        self.results_scroll.scroll_to_item(0);
+    }
 }
 
 impl Focusable for Palette {
@@ -336,6 +444,8 @@ impl Render for Palette {
                 || "Actions".into(),
                 |entry| format!("Actions for {}", entry.title),
             )
+        } else if self.surface == PaletteSurface::Clipboard {
+            "Clipboard History".into()
         } else if self.model.query().is_empty() {
             "Suggestions".into()
         } else {
@@ -360,7 +470,9 @@ impl Render for Palette {
         };
 
         let footer_label = self.notice.clone().unwrap_or_else(|| {
-            if self.model.query().is_empty() {
+            if self.surface == PaletteSurface::Clipboard {
+                format!("{} items", matches.len())
+            } else if self.model.query().is_empty() {
                 format!("{} applications", self.application_count)
             } else {
                 format!("{} results", matches.len())
@@ -707,6 +819,7 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
         PaletteEntryKind::File => "F".into(),
         PaletteEntryKind::Command => "›".into(),
         PaletteEntryKind::Calculation => "=".into(),
+        PaletteEntryKind::Clipboard => "⎘".into(),
     };
     if let Some(path) = entry.icon.as_ref().filter(|path| is_renderable_image(path)) {
         let fallback_label = label.clone();
@@ -833,6 +946,25 @@ fn convert_icns(path: &Path) -> Option<PathBuf> {
 
 fn open_file_index() -> Option<superspace_files::FileIndex> {
     superspace_files::FileIndex::open(data_root().join("files.sqlite")).ok()
+}
+
+fn builtin_entry(id: &str, title: &str, preview: &str, action_id: &str) -> PaletteEntry {
+    PaletteEntry {
+        id: id.into(),
+        title: title.into(),
+        subtitle: "Superspace".into(),
+        kind: PaletteEntryKind::Command,
+        icon: None,
+        keywords: vec![title.into(), preview.into(), "tool".into()],
+        preview: preview.into(),
+        frequency: 100,
+        favorite: true,
+        actions: vec![ActionItem {
+            id: action_id.into(),
+            title: title.into(),
+            shortcut: Some("↵".into()),
+        }],
+    }
 }
 
 fn apply_preference(entry: &mut PaletteEntry, preferences: &LauncherPreferences) {

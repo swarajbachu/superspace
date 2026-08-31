@@ -6548,6 +6548,8 @@ dependencies = [
  "superspace-core",
  "superspace-files",
  "superspace-platform",
+ "superspace-storage",
+ "superspace-sync",
  "unicode-segmentation",
 ]
 

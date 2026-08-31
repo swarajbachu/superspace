@@ -1,5 +1,7 @@
 //! GPUI application shell for Superspace.
 
+#[cfg(feature = "desktop")]
+mod clipboard_history;
 mod model;
 #[cfg(feature = "desktop")]
 pub mod motion;
