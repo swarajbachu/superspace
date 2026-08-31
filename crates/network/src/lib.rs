@@ -1,9 +1,11 @@
 //! Peer synchronization state machines, independent of the concrete QUIC transport.
 
+mod discovery;
 mod pairing;
 mod replication;
 mod transfer;
 
+pub use discovery::{DiscoveryError, DiscoveryEvent, NearbyDevice, NearbyDiscovery, SERVICE_TYPE};
 pub use pairing::{
     DeviceKeypair, InitiatorFinish, PairingCode, PairingError, PairingInitiator, PairingResponder,
     ResponderReply, SecureChannel,
