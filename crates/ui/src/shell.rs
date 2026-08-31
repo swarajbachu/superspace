@@ -5,8 +5,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
-    Window, div, img, point, px,
+    ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, Window, div, img, point, px,
 };
 use superspace_calculator::{Calculator, ResultValue};
 use superspace_core::LauncherPreferences;
@@ -19,13 +19,12 @@ use crate::{
     theme,
 };
 
-const MAX_VISIBLE_ROWS: usize = 8;
-
 /// Main command palette state.
 pub struct Palette {
     model: PaletteModel,
     focus: FocusHandle,
     search_input: Entity<SearchInput>,
+    results_scroll: ScrollHandle,
     notice: Option<String>,
     application_count: usize,
     applications: HashMap<String, AppDescriptor>,
@@ -41,6 +40,7 @@ pub struct Palette {
 impl Palette {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(SearchInput::new);
+        let results_scroll = ScrollHandle::new();
         let focus = search_input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
 
@@ -89,6 +89,7 @@ impl Palette {
             palette.model.set_query(input.read(cx).text().to_owned());
             palette.notice = None;
             palette.refresh_results();
+            palette.results_scroll.scroll_to_item(0);
             cx.notify();
         })
         .detach();
@@ -97,6 +98,7 @@ impl Palette {
             model: PaletteModel::new(entries),
             focus,
             search_input,
+            results_scroll,
             notice: None,
             application_count,
             applications,
@@ -159,6 +161,8 @@ impl Palette {
             return;
         }
         let palette_event = self.model.key(key);
+        self.results_scroll
+            .scroll_to_item(self.model.selected_index());
         self.handle_event(palette_event, window, cx);
         cx.stop_propagation();
         cx.notify();
@@ -342,7 +346,6 @@ impl Render for Palette {
             self.model
                 .actions()
                 .iter()
-                .take(MAX_VISIBLE_ROWS)
                 .enumerate()
                 .map(|(index, action)| {
                     action_row(index, action, index == selected_index, colors, cx)
@@ -351,7 +354,6 @@ impl Render for Palette {
         } else {
             matches
                 .iter()
-                .take(MAX_VISIBLE_ROWS)
                 .enumerate()
                 .map(|(index, entry)| result_row(index, entry, index == selected_index, colors, cx))
                 .collect::<Vec<_>>()
@@ -460,30 +462,38 @@ impl Render for Palette {
                             .child(section_title)
                             .child(if action_mode { "ESC TO GO BACK" } else { "" }),
                     )
-                    .when(rows.is_empty(), |list| {
-                        list.child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
-                                .gap(px(7.0))
-                                .child(
+                    .child(
+                        div()
+                            .id("results-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.results_scroll)
+                            .when(rows.is_empty(), |list| {
+                                list.child(
                                     div()
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child("No matches found"),
+                                        .size_full()
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(7.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child("No matches found"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(colors.muted)
+                                                .child("Try an app name or a file keyword"),
+                                        ),
                                 )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(colors.muted)
-                                        .child("Try an app name or a file keyword"),
-                                ),
-                        )
-                    })
-                    .children(rows),
+                            })
+                            .children(rows),
+                    ),
             )
             .child(
                 div()
