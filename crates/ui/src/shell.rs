@@ -1,9 +1,12 @@
+use std::collections::HashMap;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Render, Styled as _, Window, div, px,
 };
 use superspace_core::builtin_features;
+use superspace_platform::AppDescriptor;
 
 use crate::{
     ActionItem, PaletteEntry, PaletteEvent, PaletteKey, PaletteMode, PaletteModel, motion, theme,
@@ -14,13 +17,14 @@ pub struct Palette {
     model: PaletteModel,
     focus: FocusHandle,
     status: String,
+    applications: HashMap<String, AppDescriptor>,
 }
 
 impl Palette {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let entries = builtin_features()
+        let mut entries = builtin_features()
             .iter()
             .map(|feature| PaletteEntry {
                 id: feature.id.into(),
@@ -45,11 +49,32 @@ impl Palette {
                     },
                 ],
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let applications =
+            superspace_platform::discover_apps(&superspace_platform::default_app_roots())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|application| (format!("app:{}", application.id), application))
+                .collect::<HashMap<_, _>>();
+        entries.extend(applications.iter().map(|(id, application)| PaletteEntry {
+            id: id.clone(),
+            title: application.name.clone(),
+            keywords: application.keywords.clone(),
+            preview: format!("Launch {}", application.name),
+            frequency: 0,
+            favorite: false,
+            actions: vec![ActionItem {
+                id: "launch".into(),
+                title: "Launch Application".into(),
+                shortcut: Some("↵".into()),
+            }],
+        }));
+        let status = format!("{} applications indexed", applications.len());
         Self {
             model: PaletteModel::new(entries),
             focus,
-            status: "Nearby devices appear here automatically".into(),
+            status,
+            applications,
         }
     }
 
@@ -77,11 +102,25 @@ impl Palette {
             PaletteEvent::Invoke {
                 entry_id,
                 action_id,
-            } => self.status = format!("Requested {action_id} for {entry_id}"),
+            } => self.invoke(&entry_id, &action_id),
             PaletteEvent::Dismiss => window.remove_window(),
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    fn invoke(&mut self, entry_id: &str, action_id: &str) {
+        if action_id == "launch" {
+            self.status = self.applications.get(entry_id).map_or_else(
+                || format!("Application disappeared: {entry_id}"),
+                |application| match application.launch() {
+                    Ok(process_id) => format!("Launched {} ({process_id})", application.name),
+                    Err(error) => format!("Could not launch {}: {error}", application.name),
+                },
+            );
+        } else {
+            self.status = format!("Requested {action_id} for {entry_id}");
+        }
     }
 }
 

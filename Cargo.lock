@@ -6431,6 +6431,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "superspace-core",
+ "superspace-platform",
 ]
 
 [[package]]

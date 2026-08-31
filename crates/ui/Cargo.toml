@@ -14,6 +14,7 @@ desktop = ["dep:gpui", "dep:gpui_platform"]
 gpui = { workspace = true, optional = true }
 gpui_platform = { workspace = true, optional = true }
 superspace-core = { path = "../core" }
+superspace-platform = { path = "../platform" }
 
 [lints]
 workspace = true
