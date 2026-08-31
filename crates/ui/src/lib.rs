@@ -4,14 +4,20 @@ mod model;
 #[cfg(feature = "desktop")]
 pub mod motion;
 #[cfg(feature = "desktop")]
+mod search_input;
+#[cfg(feature = "desktop")]
 mod shell;
 #[cfg(feature = "desktop")]
 mod theme;
 
-pub use model::{ActionItem, PaletteEntry, PaletteEvent, PaletteKey, PaletteMode, PaletteModel};
+pub use model::{
+    ActionItem, PaletteEntry, PaletteEntryKind, PaletteEvent, PaletteKey, PaletteMode, PaletteModel,
+};
 
 #[cfg(feature = "desktop")]
-use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
+};
 
 /// Start the headed Superspace application.
 ///
@@ -21,12 +27,14 @@ use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {
         theme::install(cx);
-        let bounds = Bounds::centered(None, size(px(760.0), px(520.0)), cx);
+        search_input::init(cx);
+        let bounds = Bounds::centered(None, size(px(720.0), px(500.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(620.0), px(420.0))),
+                window_min_size: Some(size(px(640.0), px(440.0))),
                 titlebar: None,
+                window_background: WindowBackgroundAppearance::Blurred,
                 ..WindowOptions::default()
             },
             |window, cx| cx.new(|cx| shell::Palette::new(window, cx)),

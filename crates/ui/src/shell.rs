@@ -3,26 +3,36 @@ use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Window,
-    div, px,
+    AnimationExt as _, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity,
+    FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Window, div, img, px,
 };
-use superspace_core::{LauncherPreferences, builtin_features};
+use superspace_calculator::{Calculator, ResultValue};
+use superspace_core::LauncherPreferences;
 use superspace_platform::AppDescriptor;
 
 use crate::{
-    ActionItem, PaletteEntry, PaletteEvent, PaletteKey, PaletteMode, PaletteModel, motion, theme,
+    ActionItem, PaletteEntry, PaletteEntryKind, PaletteEvent, PaletteKey, PaletteMode,
+    PaletteModel, motion,
+    search_input::{InputChanged, SearchInput},
+    theme,
 };
+
+const MAX_VISIBLE_ROWS: usize = 8;
 
 /// Main command palette state.
 pub struct Palette {
     model: PaletteModel,
     focus: FocusHandle,
-    status: String,
+    search_input: Entity<SearchInput>,
+    notice: Option<String>,
+    application_count: usize,
     applications: HashMap<String, AppDescriptor>,
     base_entries: Vec<PaletteEntry>,
     file_index: Option<superspace_files::FileIndex>,
     files: HashMap<String, PathBuf>,
+    calculations: HashMap<String, String>,
     theme_kind: theme::ThemeKind,
     preferences: LauncherPreferences,
     preferences_path: PathBuf,
@@ -30,92 +40,87 @@ pub struct Palette {
 
 impl Palette {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let focus = cx.focus_handle();
+        let search_input = cx.new(SearchInput::new);
+        let focus = search_input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
-        let mut entries = builtin_features()
-            .iter()
-            .map(|feature| PaletteEntry {
-                id: feature.id.into(),
-                title: feature.title.into(),
-                keywords: vec![format!("{:?}", feature.area).to_ascii_lowercase()],
-                preview: preview(feature.id).into(),
-                frequency: 0,
-                favorite: matches!(
-                    feature.id,
-                    "app-launcher" | "clipboard-history" | "nearby-share"
-                ),
-                actions: vec![
-                    ActionItem {
-                        id: "open".into(),
-                        title: "Open".into(),
-                        shortcut: Some("↵".into()),
-                    },
-                    ActionItem {
-                        id: "favorite".into(),
-                        title: "Toggle Favorite".into(),
-                        shortcut: None,
-                    },
-                ],
-            })
-            .collect::<Vec<_>>();
+
         let preferences_path = data_root().join("launcher.json");
         let preferences = LauncherPreferences::load(&preferences_path).unwrap_or_default();
-        for entry in &mut entries {
-            apply_preference(entry, &preferences);
-        }
         let applications =
             superspace_platform::discover_apps(&superspace_platform::default_app_roots())
                 .unwrap_or_default()
                 .into_iter()
                 .map(|application| (format!("app:{}", application.id), application))
                 .collect::<HashMap<_, _>>();
-        entries.extend(applications.iter().map(|(id, application)| {
-            let mut entry = PaletteEntry {
-                id: id.clone(),
-                title: application.name.clone(),
-                keywords: application.keywords.clone(),
-                preview: format!("Launch {}", application.name),
-                frequency: 0,
-                favorite: false,
-                actions: vec![
-                    ActionItem {
-                        id: "launch".into(),
-                        title: "Launch Application".into(),
-                        shortcut: Some("↵".into()),
-                    },
-                    ActionItem {
-                        id: "favorite".into(),
-                        title: "Toggle Favorite".into(),
-                        shortcut: None,
-                    },
-                ],
-            };
-            apply_preference(&mut entry, &preferences);
-            entry
-        }));
-        let status = format!("{} applications indexed", applications.len());
+        let entries = applications
+            .iter()
+            .map(|(id, application)| {
+                let mut entry = PaletteEntry {
+                    id: id.clone(),
+                    title: application.name.clone(),
+                    subtitle: String::new(),
+                    kind: PaletteEntryKind::Application,
+                    icon: application.icon.as_deref().and_then(prepare_icon),
+                    keywords: application.keywords.clone(),
+                    preview: format!("Open {}", application.name),
+                    frequency: 0,
+                    favorite: false,
+                    actions: vec![
+                        ActionItem {
+                            id: "launch".into(),
+                            title: "Open Application".into(),
+                            shortcut: Some("↵".into()),
+                        },
+                        ActionItem {
+                            id: "favorite".into(),
+                            title: "Toggle Favorite".into(),
+                            shortcut: None,
+                        },
+                    ],
+                };
+                apply_preference(&mut entry, &preferences);
+                entry
+            })
+            .collect::<Vec<_>>();
+        let application_count = applications.len();
         let base_entries = entries.clone();
+
+        cx.subscribe(&search_input, |palette, input, _: &InputChanged, cx| {
+            palette.model.set_query(input.read(cx).text().to_owned());
+            palette.notice = None;
+            palette.refresh_results();
+            cx.notify();
+        })
+        .detach();
+
         Self {
             model: PaletteModel::new(entries),
             focus,
-            status,
+            search_input,
+            notice: None,
+            application_count,
             applications,
             base_entries,
             file_index: open_file_index(),
             files: HashMap::new(),
+            calculations: HashMap::new(),
             theme_kind: theme::ThemeKind::default(),
             preferences,
             preferences_path,
         }
     }
 
-    fn handle_event(&mut self, event: PaletteEvent, window: &mut Window) {
+    fn handle_event(&mut self, event: PaletteEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             PaletteEvent::None => {}
             PaletteEvent::Invoke {
                 entry_id,
                 action_id,
-            } => self.invoke(&entry_id, &action_id),
+            } => {
+                if self.invoke(&entry_id, &action_id, cx) {
+                    window.remove_window();
+                }
+            }
             PaletteEvent::Dismiss => window.remove_window(),
         }
     }
@@ -127,7 +132,7 @@ impl Palette {
             && (keystroke.modifiers.platform || keystroke.modifiers.control)
         {
             self.theme_kind = self.theme_kind.next();
-            self.status = format!("Theme: {}", self.theme_kind.name());
+            self.notice = Some(format!("{} appearance", self.theme_kind.name()));
             cx.stop_propagation();
             cx.notify();
             return;
@@ -137,72 +142,82 @@ impl Palette {
             "down" => Some(PaletteKey::Down),
             "enter" => Some(PaletteKey::Enter),
             "escape" => Some(PaletteKey::Escape),
-            "backspace" => Some(PaletteKey::Backspace),
             "k" if keystroke.modifiers.platform || keystroke.modifiers.control => {
                 Some(PaletteKey::OpenActions)
-            }
-            _ if !keystroke.modifiers.platform && !keystroke.modifiers.control => {
-                keystroke.key_char.clone().map(PaletteKey::Text)
             }
             _ => None,
         };
         let Some(key) = key else {
             return;
         };
-        let query_changed = matches!(&key, PaletteKey::Text(_) | PaletteKey::Backspace);
-        let palette_event = self.model.key(key);
-        self.handle_event(palette_event, window);
-        if query_changed {
-            self.refresh_file_results();
+        if key == PaletteKey::Escape
+            && self.model.mode() == PaletteMode::Results
+            && !self.model.query().is_empty()
+        {
+            self.search_input.update(cx, SearchInput::clear);
+            cx.stop_propagation();
+            return;
         }
+        let palette_event = self.model.key(key);
+        self.handle_event(palette_event, window, cx);
         cx.stop_propagation();
         cx.notify();
     }
 
-    fn invoke(&mut self, entry_id: &str, action_id: &str) {
+    /// Returns whether the palette should close after the action.
+    fn invoke(&mut self, entry_id: &str, action_id: &str, cx: &mut Context<Self>) -> bool {
         if action_id == "launch" {
             let application = self.applications.get(entry_id).cloned();
-            self.status = application.map_or_else(
-                || format!("Application disappeared: {entry_id}"),
-                |application| match application.launch() {
-                    Ok(process_id) => {
-                        self.record_invocation(entry_id);
-                        format!("Launched {} ({process_id})", application.name)
-                    }
-                    Err(error) => format!("Could not launch {}: {error}", application.name),
-                },
-            );
+            application.is_some_and(|application| match application.launch() {
+                Ok(_) => {
+                    self.record_invocation(entry_id);
+                    true
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Could not open {}: {error}", application.name));
+                    false
+                }
+            })
         } else if action_id == "open-file" {
-            self.status = self.files.get(entry_id).map_or_else(
-                || format!("File disappeared: {entry_id}"),
-                |path| match superspace_platform::open_path(path) {
-                    Ok(process_id) => format!("Opened {} ({process_id})", path.display()),
-                    Err(error) => format!("Could not open {}: {error}", path.display()),
-                },
-            );
-        } else if action_id == "nearby-share" {
-            self.status = self.files.get(entry_id).map_or_else(
-                || format!("File disappeared: {entry_id}"),
-                |path| format!("Ready to share {} with a nearby device", path.display()),
-            );
+            self.files.get(entry_id).cloned().is_some_and(|path| {
+                match superspace_platform::open_path(&path) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        self.notice = Some(format!("Could not open {}: {error}", path.display()));
+                        false
+                    }
+                }
+            })
+        } else if action_id == "copy-result" {
+            if let Some(result) = self.calculations.get(entry_id) {
+                cx.write_to_clipboard(ClipboardItem::new_string(result.clone()));
+                self.notice = Some(format!("Copied {result}"));
+            }
+            false
         } else if action_id == "favorite" {
             self.toggle_favorite(entry_id);
+            false
         } else {
-            self.status = format!("Requested {action_id} for {entry_id}");
+            self.notice = Some("That action is not available yet".into());
+            false
         }
     }
 
     fn toggle_favorite(&mut self, entry_id: &str) {
+        let title = self.applications.get(entry_id).map_or_else(
+            || "Application".into(),
+            |application| application.name.clone(),
+        );
         match self.preferences.toggle_favorite(entry_id) {
             Ok(favorite) => {
                 self.apply_saved_preference(entry_id);
-                self.status = if favorite {
-                    format!("Added {entry_id} to favorites")
+                self.notice = Some(if favorite {
+                    format!("Added {title} to favorites")
                 } else {
-                    format!("Removed {entry_id} from favorites")
-                };
+                    format!("Removed {title} from favorites")
+                });
             }
-            Err(error) => self.status = format!("Could not update favorite: {error}"),
+            Err(error) => self.notice = Some(format!("Could not update favorite: {error}")),
         }
     }
 
@@ -230,12 +245,13 @@ impl Palette {
             apply_preference(entry, &self.preferences);
         }
         if let Err(error) = self.preferences.save(&self.preferences_path) {
-            self.status = format!("Could not save launcher preferences: {error}");
+            self.notice = Some(format!("Could not save launcher preferences: {error}"));
         }
     }
 
-    fn refresh_file_results(&mut self) {
+    fn refresh_results(&mut self) {
         self.files.clear();
+        self.calculations.clear();
         let query = self.model.query().trim();
         let matches = if query.chars().count() >= 2 {
             self.file_index
@@ -246,28 +262,48 @@ impl Palette {
             Vec::new()
         };
         let mut entries = self.base_entries.clone();
+        if let Some(result) = calculate(query) {
+            let id = format!("calculation:{query}");
+            self.calculations.insert(id.clone(), result.clone());
+            entries.push(PaletteEntry {
+                id,
+                title: result,
+                subtitle: query.to_owned(),
+                kind: PaletteEntryKind::Calculation,
+                icon: None,
+                keywords: vec![query.to_owned(), "calculator".into()],
+                preview: "Press Enter to copy the result".into(),
+                frequency: u32::MAX,
+                favorite: true,
+                actions: vec![ActionItem {
+                    id: "copy-result".into(),
+                    title: "Copy Result".into(),
+                    shortcut: Some("↵".into()),
+                }],
+            });
+        }
         entries.extend(matches.into_iter().map(|matched| {
             let id = format!("file:{}", matched.path.display());
             self.files.insert(id.clone(), matched.path.clone());
+            let subtitle = matched
+                .path
+                .parent()
+                .map_or_else(String::new, |parent| parent.display().to_string());
             PaletteEntry {
                 id,
                 title: matched.name,
+                subtitle,
+                kind: PaletteEntryKind::File,
+                icon: None,
                 keywords: Vec::new(),
-                preview: format!("{} bytes · {}", matched.size, matched.path.display()),
+                preview: format!("{} bytes", matched.size),
                 frequency: 0,
                 favorite: false,
-                actions: vec![
-                    ActionItem {
-                        id: "open-file".into(),
-                        title: "Open File".into(),
-                        shortcut: Some("↵".into()),
-                    },
-                    ActionItem {
-                        id: "nearby-share".into(),
-                        title: "Share with Nearby Device".into(),
-                        shortcut: None,
-                    },
-                ],
+                actions: vec![ActionItem {
+                    id: "open-file".into(),
+                    title: "Open File".into(),
+                    shortcut: Some("↵".into()),
+                }],
             }
         }));
         self.model.replace_entries(entries);
@@ -286,148 +322,185 @@ impl Render for Palette {
         reason = "declarative palette layout is clearest as one tree"
     )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = theme::for_kind(self.theme_kind);
+        let colors = theme::for_kind(self.theme_kind);
         let matches = self.model.results().cloned().collect::<Vec<_>>();
         let selected = self.model.selected_entry().cloned();
-        let selected_title = selected
-            .as_ref()
-            .map_or_else(|| "No results".into(), |entry| entry.title.clone());
-        let selected_preview = selected.as_ref().map_or_else(
-            || "Try another search".into(),
-            |entry| entry.preview.clone(),
-        );
-        let rows = if self.model.mode() == PaletteMode::Actions {
+        let selected_index = self.model.selected_index();
+        let action_mode = self.model.mode() == PaletteMode::Actions;
+        let section_title = if action_mode {
+            selected.as_ref().map_or_else(
+                || "Actions".into(),
+                |entry| format!("Actions for {}", entry.title),
+            )
+        } else if self.model.query().is_empty() {
+            "Favorites & recent".into()
+        } else {
+            "Best matches".into()
+        };
+
+        let rows = if action_mode {
             self.model
                 .actions()
                 .iter()
-                .map(|action| (action.title.clone(), action.id.clone()))
+                .take(MAX_VISIBLE_ROWS)
+                .enumerate()
+                .map(|(index, action)| {
+                    action_row(index, action, index == selected_index, colors, cx)
+                })
                 .collect::<Vec<_>>()
         } else {
             matches
                 .iter()
-                .map(|entry| (entry.title.clone(), entry.id.clone()))
+                .take(MAX_VISIBLE_ROWS)
+                .enumerate()
+                .map(|(index, entry)| result_row(index, entry, index == selected_index, colors, cx))
                 .collect::<Vec<_>>()
         };
-        let selected_index = self.model.selected_index();
+
+        let footer_label = self.notice.clone().unwrap_or_else(|| {
+            selected.as_ref().map_or_else(
+                || {
+                    if self.application_count == 0 {
+                        "No applications found".into()
+                    } else {
+                        "Try a different search".into()
+                    }
+                },
+                |entry| {
+                    if entry.subtitle.is_empty() {
+                        entry.preview.clone()
+                    } else {
+                        entry.subtitle.clone()
+                    }
+                },
+            )
+        });
 
         div()
             .id("superspace-palette")
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme.background)
-            .text_color(theme.text)
+            .bg(colors.background)
+            .text_color(colors.text)
             .border_1()
-            .border_color(theme.border)
-            .rounded(px(18.0))
+            .border_color(colors.border)
+            .rounded(px(16.0))
+            .shadow_xl()
             .overflow_hidden()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .child(
                 div()
-                    .h(px(68.0))
-                    .px(px(22.0))
+                    .h(px(62.0))
+                    .px(px(18.0))
                     .flex()
                     .items_center()
                     .border_b_1()
-                    .border_color(theme.border)
+                    .border_color(colors.border)
                     .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(20.0))
-                            .text_color(theme.accent)
-                            .child("✦"),
-                    )
-                    .child(div().flex_1().text_size(px(20.0)).child(
-                        if self.model.query().is_empty() {
-                            "Search Superspace…".to_string()
-                        } else {
-                            self.model.query().to_string()
-                        },
-                    ))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.muted)
-                            .child("⌘ Space"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .w(px(390.0))
-                            .p(px(10.0))
+                            .size(px(28.0))
                             .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .children(rows.iter().take(10).enumerate().map(|(index, entry)| {
-                                let selected = index == selected_index;
-                                div()
-                                    .id(("command-row", index))
-                                    .h(px(42.0))
-                                    .px(px(12.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .rounded(px(9.0))
-                                    .when(selected, |row| row.bg(theme.selected))
-                                    .hover(|row| row.bg(theme.selected))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        let palette_event = this.model.invoke(index);
-                                        this.handle_event(palette_event, window);
-                                        cx.notify();
-                                    }))
-                                    .child(div().text_size(px(14.0)).child(entry.0.clone()))
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.muted)
-                                            .child(entry.1.clone()),
-                                    )
-                            })),
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(8.0))
+                            .bg(colors.tile)
+                            .text_size(px(15.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.accent)
+                            .child("S"),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .p(px(24.0))
-                            .border_l_1()
-                            .border_color(theme.border)
-                            .bg(theme.surface)
+                            .min_w_0()
+                            .h(px(40.0))
+                            .child(self.search_input.clone()),
+                    )
+                    .child(keycap("⌘ Space", colors)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .p(px(8.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(28.0))
+                            .px(px(10.0))
                             .flex()
-                            .flex_col()
-                            .gap(px(12.0))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(theme.accent)
-                                    .child("SUPERSPACE"),
-                            )
-                            .child(div().text_size(px(22.0)).child(selected_title))
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(theme.muted)
-                                    .child(selected_preview),
-                            ),
-                    ),
+                            .items_center()
+                            .justify_between()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.muted)
+                            .child(section_title)
+                            .child(if action_mode { "ESC TO GO BACK" } else { "" }),
+                    )
+                    .when(rows.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(7.0))
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child("No matches found"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(colors.muted)
+                                        .child("Try an app name or a file keyword"),
+                                ),
+                        )
+                    })
+                    .children(rows),
             )
             .child(
                 div()
                     .h(px(42.0))
-                    .px(px(16.0))
+                    .px(px(14.0))
                     .flex()
                     .items_center()
                     .justify_between()
                     .border_t_1()
-                    .border_color(theme.border)
-                    .text_size(px(11.0))
-                    .text_color(theme.muted)
-                    .child(self.status.clone())
-                    .child("Open ↵    Actions ⌘K    Theme ⇧⌘T"),
+                    .border_color(colors.border)
+                    .bg(colors.surface)
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(11.0))
+                            .text_color(colors.muted)
+                            .child(footer_label),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .text_size(px(11.0))
+                            .text_color(colors.muted)
+                            .child(if action_mode { "Run" } else { "Open" })
+                            .child(keycap("↵", colors))
+                            .when(!action_mode && selected.is_some(), |footer| {
+                                footer.child("Actions").child(keycap("⌘ K", colors))
+                            }),
+                    ),
             )
             .with_animation(
                 "palette-enter",
@@ -436,25 +509,379 @@ impl Render for Palette {
                     element
                         .opacity(progress)
                         .relative()
-                        .top(px(6.0 * (1.0 - progress)))
+                        .top(px(4.0 * (1.0 - progress)))
                 },
             )
     }
 }
 
-fn preview(id: &str) -> &'static str {
-    match id {
-        "app-launcher" => "Discover and launch installed macOS and Linux applications.",
-        "clipboard-history" => "Search, pin, and restore clipboard content across trusted devices.",
-        "nearby-share" => "Send files and folders over encrypted local-network connections.",
-        "calculator" => {
-            "Calculate expressions and convert units, dates, currencies, and time zones."
-        }
-        "wasm-extensions" => {
-            "Run capability-scoped WebAssembly extensions without ambient authority."
-        }
-        _ => "Open this Superspace command or press ⌘K / Ctrl+K for more actions.",
+fn result_row(
+    index: usize,
+    entry: &PaletteEntry,
+    selected: bool,
+    colors: theme::Theme,
+    cx: &mut Context<Palette>,
+) -> AnyElement {
+    let entry = entry.clone();
+    if entry.kind == PaletteEntryKind::Calculation {
+        return calculation_row(index, entry, selected, colors, cx);
     }
+    div()
+        .id(("result-row", index))
+        .h(px(44.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(11.0))
+        .rounded(px(9.0))
+        .when(selected, |row| row.bg(colors.selected))
+        .hover(move |row| {
+            row.bg(if selected {
+                colors.selected
+            } else {
+                colors.hovered
+            })
+        })
+        .on_click(
+            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                if event.click_count() >= 2 {
+                    let palette_event = this.model.invoke(index);
+                    this.handle_event(palette_event, window, cx);
+                } else {
+                    this.model.select(index);
+                }
+                cx.notify();
+            }),
+        )
+        .child(entry_icon(&entry, colors))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(entry.title),
+                )
+                .when(!entry.subtitle.is_empty(), |content| {
+                    content.child(
+                        div()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_middle()
+                            .text_size(px(10.0))
+                            .text_color(colors.muted)
+                            .child(entry.subtitle),
+                    )
+                }),
+        )
+        .when(entry.favorite, |row| {
+            row.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(colors.accent)
+                    .child("●"),
+            )
+        })
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(colors.muted)
+                .child(entry.kind.label()),
+        )
+        .into_any_element()
+}
+
+fn calculation_row(
+    index: usize,
+    entry: PaletteEntry,
+    selected: bool,
+    colors: theme::Theme,
+    cx: &mut Context<Palette>,
+) -> AnyElement {
+    div()
+        .id(("calculation-row", index))
+        .h(px(72.0))
+        .px(px(14.0))
+        .flex()
+        .items_center()
+        .gap(px(14.0))
+        .rounded(px(10.0))
+        .when(selected, |row| row.bg(colors.selected))
+        .hover(move |row| {
+            row.bg(if selected {
+                colors.selected
+            } else {
+                colors.hovered
+            })
+        })
+        .on_click(
+            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                if event.click_count() >= 2 {
+                    let palette_event = this.model.invoke(index);
+                    this.handle_event(palette_event, window, cx);
+                } else {
+                    this.model.select(index);
+                }
+                cx.notify();
+            }),
+        )
+        .child(
+            div()
+                .size(px(32.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.0))
+                .bg(colors.tile)
+                .text_size(px(16.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.accent)
+                .child("="),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(16.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(15.0))
+                        .text_color(colors.muted)
+                        .child(entry.subtitle),
+                )
+                .child(
+                    div()
+                        .text_size(px(17.0))
+                        .text_color(colors.muted)
+                        .child("→"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(20.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(entry.title),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(colors.muted)
+                .child("Copy result"),
+        )
+        .into_any_element()
+}
+
+fn action_row(
+    index: usize,
+    action: &ActionItem,
+    selected: bool,
+    colors: theme::Theme,
+    cx: &mut Context<Palette>,
+) -> AnyElement {
+    let shortcut = action.shortcut.clone();
+    div()
+        .id(("action-row", index))
+        .h(px(44.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(11.0))
+        .rounded(px(9.0))
+        .when(selected, |row| row.bg(colors.selected))
+        .hover(move |row| {
+            row.bg(if selected {
+                colors.selected
+            } else {
+                colors.hovered
+            })
+        })
+        .on_click(cx.listener(move |this, _, window, cx| {
+            let palette_event = this.model.invoke(index);
+            this.handle_event(palette_event, window, cx);
+            cx.notify();
+        }))
+        .child(
+            div()
+                .size(px(28.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(7.0))
+                .bg(colors.tile)
+                .text_size(px(13.0))
+                .text_color(colors.muted)
+                .child("↗"),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .child(action.title.clone()),
+        )
+        .when_some(shortcut, |row, shortcut| {
+            row.child(keycap(shortcut, colors))
+        })
+        .into_any_element()
+}
+
+fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
+    let label = match entry.kind {
+        PaletteEntryKind::Application => entry
+            .title
+            .chars()
+            .next()
+            .unwrap_or('A')
+            .to_uppercase()
+            .to_string(),
+        PaletteEntryKind::File => "F".into(),
+        PaletteEntryKind::Command => "›".into(),
+        PaletteEntryKind::Calculation => "=".into(),
+    };
+    if let Some(path) = entry.icon.as_ref().filter(|path| is_renderable_image(path)) {
+        let fallback_label = label.clone();
+        return img(path.clone())
+            .size(px(28.0))
+            .rounded(px(7.0))
+            .with_fallback(move || fallback_icon(fallback_label.clone(), colors))
+            .into_any_element();
+    }
+    fallback_icon(label, colors)
+}
+
+fn fallback_icon(label: String, colors: theme::Theme) -> AnyElement {
+    div()
+        .size(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.0))
+        .bg(colors.tile)
+        .text_size(px(12.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(colors.text)
+        .child(label)
+        .into_any_element()
+}
+
+fn keycap(label: impl Into<String>, colors: theme::Theme) -> AnyElement {
+    div()
+        .h(px(22.0))
+        .px(px(7.0))
+        .flex()
+        .items_center()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.surface)
+        .text_size(px(10.0))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(colors.muted)
+        .child(label.into())
+        .into_any_element()
+}
+
+fn is_renderable_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            gpui::Img::extensions()
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported))
+        })
+}
+
+fn calculate(query: &str) -> Option<String> {
+    if query.is_empty()
+        || !query.chars().any(|character| character.is_ascii_digit())
+        || !query.chars().any(|character| {
+            matches!(character, '+' | '-' | '*' | '/' | '%' | '^') || character.is_alphabetic()
+        })
+    {
+        return None;
+    }
+    Calculator::default()
+        .evaluate(query)
+        .ok()
+        .map(|result| match result {
+            ResultValue::Number(value) => format_number(value),
+            ResultValue::Quantity { value, unit } => {
+                format!("{} {}", format_number(value), unit.symbol)
+            }
+        })
+}
+
+fn format_number(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.10}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+fn prepare_icon(path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    if is_renderable_image(&path) {
+        return Some(path);
+    }
+    #[cfg(target_os = "macos")]
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("icns"))
+    {
+        return convert_icns(&path);
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn convert_icns(path: &Path) -> Option<PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::fs;
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let cache = data_root()
+        .join("icon-cache")
+        .join(format!("{:016x}.png", hasher.finish()));
+    if cache.is_file() {
+        return Some(cache);
+    }
+    fs::create_dir_all(cache.parent()?).ok()?;
+    let family = icns::IconFamily::read(fs::File::open(path).ok()?).ok()?;
+    let icon_type = family
+        .available_icons()
+        .into_iter()
+        .min_by_key(|icon_type| icon_type.pixel_width().abs_diff(64))?;
+    let icon = family.get_icon_with_type(icon_type).ok()?;
+    icon.write_png(fs::File::create(&cache).ok()?).ok()?;
+    Some(cache)
 }
 
 fn open_file_index() -> Option<superspace_files::FileIndex> {

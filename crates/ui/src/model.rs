@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use superspace_core::{SearchCandidate, rank_candidates};
 
 /// One secondary action available for a palette result.
@@ -18,6 +19,12 @@ pub struct PaletteEntry {
     pub id: String,
     /// Primary visible title.
     pub title: String,
+    /// Secondary context, such as a parent directory.
+    pub subtitle: String,
+    /// Semantic result category shown to the user.
+    pub kind: PaletteEntryKind,
+    /// Renderable icon path when the platform exposes one.
+    pub icon: Option<PathBuf>,
     /// Search aliases.
     pub keywords: Vec<String>,
     /// Short preview description.
@@ -28,6 +35,32 @@ pub struct PaletteEntry {
     pub favorite: bool,
     /// Default and alternate actions.
     pub actions: Vec<ActionItem>,
+}
+
+/// Semantic category for a launcher result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaletteEntryKind {
+    /// An installed desktop application.
+    Application,
+    /// A file indexed on the local device.
+    File,
+    /// A launcher command.
+    Command,
+    /// An inline calculation or conversion.
+    Calculation,
+}
+
+impl PaletteEntryKind {
+    /// Short label used as result metadata.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Application => "Application",
+            Self::File => "File",
+            Self::Command => "Command",
+            Self::Calculation => "Copy result",
+        }
+    }
 }
 
 /// Active palette surface.
@@ -106,6 +139,12 @@ impl PaletteModel {
     #[must_use]
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// Replace the complete search query, as used by native text input.
+    pub fn set_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.rerank();
     }
 
     /// Current surface.
@@ -326,6 +365,9 @@ mod tests {
         .map(|(id, title, favorite)| PaletteEntry {
             id: id.into(),
             title: title.into(),
+            subtitle: String::new(),
+            kind: PaletteEntryKind::Command,
+            icon: None,
             keywords: vec![id.into()],
             preview: format!("Preview {title}"),
             frequency: 0,

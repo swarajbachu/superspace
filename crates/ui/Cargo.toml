@@ -14,8 +14,14 @@ desktop = ["dep:gpui", "dep:gpui_platform"]
 gpui = { workspace = true, optional = true }
 gpui_platform = { workspace = true, optional = true }
 superspace-core = { path = "../core" }
+superspace-calculator = { path = "../calculator" }
 superspace-files = { path = "../files" }
 superspace-platform = { path = "../platform" }
+unicode-segmentation.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+icns.workspace = true
+png.workspace = true
 
 [lints]
 workspace = true

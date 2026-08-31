@@ -213,10 +213,10 @@ fn discover_root(root: &Path, seen: &mut HashSet<String>, output: &mut Vec<AppDe
             .or_else(|| path.file_stem().and_then(|name| name.to_str()))
             .unwrap_or(id)
             .to_owned();
-        let icon = dictionary
-            .get("CFBundleIconFile")
-            .and_then(plist::Value::as_string)
-            .map(str::to_owned);
+        let icon = bundle_icon_name(dictionary)
+            .and_then(|name| resolve_bundle_icon(&path, name))
+            .or_else(|| find_bundle_icon(&path))
+            .map(|path| path.to_string_lossy().into_owned());
         output.push(AppDescriptor {
             id: id.to_owned(),
             name,
@@ -225,6 +225,54 @@ fn discover_root(root: &Path, seen: &mut HashSet<String>, output: &mut Vec<AppDe
             launch: LaunchSpec::MacBundle(path),
         });
     }
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_icon_name(dictionary: &plist::Dictionary) -> Option<&str> {
+    dictionary
+        .get("CFBundleIconFile")
+        .and_then(plist::Value::as_string)
+        .or_else(|| {
+            dictionary
+                .get("CFBundleIcons")?
+                .as_dictionary()?
+                .get("CFBundlePrimaryIcon")?
+                .as_dictionary()?
+                .get("CFBundleIconFiles")?
+                .as_array()?
+                .iter()
+                .rev()
+                .find_map(plist::Value::as_string)
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_bundle_icon(bundle: &Path, name: &str) -> Option<PathBuf> {
+    let resources = bundle.join("Contents/Resources");
+    let path = resources.join(name);
+    if path.is_file() {
+        return Some(path);
+    }
+    if path.extension().is_none() {
+        let with_extension = path.with_extension("icns");
+        if with_extension.is_file() {
+            return Some(with_extension);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn find_bundle_icon(bundle: &Path) -> Option<PathBuf> {
+    fs::read_dir(bundle.join("Contents/Resources"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("icns"))
+        })
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

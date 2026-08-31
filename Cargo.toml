@@ -34,6 +34,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 chrono-tz = "0.10"
 fs2 = "0.4"
 ignore = "0.4"
+icns = "0.3"
 mdns-sd = { version = "0.21", default-features = false }
 png = "0.18"
 plist = "1.8"
@@ -50,6 +51,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 snow = "0.10"
 thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
+unicode-segmentation = "1.13"
 tempfile = "3.22"
 tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 wasmparser = "0.239"
