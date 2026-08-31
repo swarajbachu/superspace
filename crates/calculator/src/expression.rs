@@ -43,6 +43,9 @@ pub enum CalculatorError {
     /// Result is not finite.
     #[error("the result is outside the supported numeric range")]
     NonFinite,
+    /// Function received the wrong number of arguments or an empty list.
+    #[error("invalid arguments for function: {0}")]
+    InvalidArguments(String),
 }
 
 /// Pure calculator with an injected unit registry.
@@ -147,31 +150,35 @@ impl<'a> Parser<'a> {
         let mut left = self.prefix()?;
         loop {
             self.whitespace();
-            let Some(operator) = self.peek() else { break };
+            let Some(operator) = self.operator() else {
+                break;
+            };
             let (precedence, right_associative) = match operator {
-                '+' | '-' => (1, false),
-                '*' | '/' | '%' => (2, false),
-                '^' => (3, true),
-                _ => break,
+                Operator::Add | Operator::Subtract => (1, false),
+                Operator::Multiply | Operator::Divide | Operator::Modulo | Operator::Ratio => {
+                    (2, false)
+                }
+                Operator::Power => (3, true),
             };
             if precedence < minimum_precedence {
                 break;
             }
-            self.bump();
+            self.consume_operator(operator);
             let right = self.expression(if right_associative {
                 precedence
             } else {
                 precedence + 1
             })?;
             left = match operator {
-                '+' => left + right,
-                '-' => left - right,
-                '*' => left * right,
-                '/' | '%' if right == 0.0 => return Err(CalculatorError::DivisionByZero),
-                '/' => left / right,
-                '%' => left % right,
-                '^' => left.powf(right),
-                _ => unreachable!(),
+                Operator::Add => left + right,
+                Operator::Subtract => left - right,
+                Operator::Multiply => left * right,
+                Operator::Divide | Operator::Modulo | Operator::Ratio if right == 0.0 => {
+                    return Err(CalculatorError::DivisionByZero);
+                }
+                Operator::Divide | Operator::Ratio => left / right,
+                Operator::Modulo => left % right,
+                Operator::Power => left.powf(right),
             };
         }
         Ok(left)
@@ -179,7 +186,7 @@ impl<'a> Parser<'a> {
 
     fn prefix(&mut self) -> Result<f64, CalculatorError> {
         self.whitespace();
-        match self.peek() {
+        let mut value = match self.peek() {
             Some('+') => {
                 self.bump();
                 self.prefix()
@@ -201,11 +208,31 @@ impl<'a> Parser<'a> {
             Some(character) if character.is_alphabetic() => self.name(),
             Some(_) => Err(CalculatorError::Unexpected(self.offset)),
             None => Err(CalculatorError::Incomplete),
+        }?;
+        while self.peek() == Some('%') {
+            self.bump();
+            value /= 100.0;
         }
+        Ok(value)
     }
 
     fn number(&mut self) -> Result<f64, CalculatorError> {
         let start = self.offset;
+        if self.input[self.offset..].starts_with("0x")
+            || self.input[self.offset..].starts_with("0X")
+        {
+            return self.radix_number(start, 16, 2);
+        }
+        if self.input[self.offset..].starts_with("0b")
+            || self.input[self.offset..].starts_with("0B")
+        {
+            return self.radix_number(start, 2, 2);
+        }
+        if self.input[self.offset..].starts_with("0o")
+            || self.input[self.offset..].starts_with("0O")
+        {
+            return self.radix_number(start, 8, 2);
+        }
         let mut exponent_allowed = true;
         while let Some(character) = self.peek() {
             if character.is_ascii_digit() || character == '.' || character == '_' {
@@ -226,6 +253,29 @@ impl<'a> Parser<'a> {
             .map_err(|_| CalculatorError::Unexpected(start))
     }
 
+    fn radix_number(
+        &mut self,
+        start: usize,
+        radix: u32,
+        prefix_bytes: usize,
+    ) -> Result<f64, CalculatorError> {
+        self.offset += prefix_bytes;
+        let digits_start = self.offset;
+        while self
+            .peek()
+            .is_some_and(|character| character.is_digit(radix) || character == '_')
+        {
+            self.bump();
+        }
+        if self.offset == digits_start {
+            return Err(CalculatorError::Unexpected(start));
+        }
+        let digits = self.input[digits_start..self.offset].replace('_', "");
+        u64::from_str_radix(&digits, radix)
+            .map_err(|_| CalculatorError::Unexpected(start))
+            .and_then(exact_integer_as_f64)
+    }
+
     fn name(&mut self) -> Result<f64, CalculatorError> {
         let start = self.offset;
         while self.peek().is_some_and(char::is_alphabetic) {
@@ -243,26 +293,94 @@ impl<'a> Parser<'a> {
             };
         }
         self.bump();
-        let argument = self.expression(0)?;
+        let mut arguments = Vec::new();
         self.whitespace();
+        if self.peek() != Some(')') {
+            loop {
+                arguments.push(self.expression(0)?);
+                self.whitespace();
+                if self.peek() != Some(',') {
+                    break;
+                }
+                self.bump();
+            }
+        }
         if self.bump() != Some(')') {
             return Err(CalculatorError::Incomplete);
         }
+        let unary = || {
+            (arguments.len() == 1)
+                .then(|| arguments[0])
+                .ok_or_else(|| CalculatorError::InvalidArguments(name.clone()))
+        };
         match name.as_str() {
-            "sqrt" => Ok(argument.sqrt()),
-            "cbrt" => Ok(argument.cbrt()),
-            "abs" => Ok(argument.abs()),
-            "sin" => Ok(argument.sin()),
-            "cos" => Ok(argument.cos()),
-            "tan" => Ok(argument.tan()),
-            "ln" => Ok(argument.ln()),
-            "log" | "log10" => Ok(argument.log10()),
-            "log2" => Ok(argument.log2()),
-            "exp" => Ok(argument.exp()),
-            "floor" => Ok(argument.floor()),
-            "ceil" => Ok(argument.ceil()),
-            "round" => Ok(argument.round()),
+            "sqrt" => Ok(unary()?.sqrt()),
+            "cbrt" => Ok(unary()?.cbrt()),
+            "abs" => Ok(unary()?.abs()),
+            "sin" => Ok(unary()?.sin()),
+            "cos" => Ok(unary()?.cos()),
+            "tan" => Ok(unary()?.tan()),
+            "ln" => Ok(unary()?.ln()),
+            "log" | "log10" => Ok(unary()?.log10()),
+            "log2" => Ok(unary()?.log2()),
+            "exp" => Ok(unary()?.exp()),
+            "floor" => Ok(unary()?.floor()),
+            "ceil" => Ok(unary()?.ceil()),
+            "round" => Ok(unary()?.round()),
+            "sum" if !arguments.is_empty() => Ok(arguments.iter().sum()),
+            "avg" | "average" if !arguments.is_empty() => {
+                let count = u32::try_from(arguments.len())
+                    .map_err(|_| CalculatorError::InvalidArguments(name.clone()))?;
+                Ok(arguments.iter().sum::<f64>() / f64::from(count))
+            }
+            "min" if !arguments.is_empty() => Ok(arguments
+                .into_iter()
+                .reduce(f64::min)
+                .expect("non-empty arguments")),
+            "max" if !arguments.is_empty() => Ok(arguments
+                .into_iter()
+                .reduce(f64::max)
+                .expect("non-empty arguments")),
+            "sum" | "avg" | "average" | "min" | "max" => {
+                Err(CalculatorError::InvalidArguments(name))
+            }
             _ => Err(CalculatorError::UnknownName(name)),
+        }
+    }
+
+    fn operator(&self) -> Option<Operator> {
+        match self.peek()? {
+            '+' => Some(Operator::Add),
+            '-' => Some(Operator::Subtract),
+            '*' => Some(Operator::Multiply),
+            '/' => Some(Operator::Divide),
+            '%' => Some(Operator::Modulo),
+            ':' => Some(Operator::Ratio),
+            '^' => Some(Operator::Power),
+            'o' | 'O'
+                if self.input[self.offset..]
+                    .get(..2)
+                    .is_some_and(|word| word.eq_ignore_ascii_case("of"))
+                    && self.input[self.offset + 2..]
+                        .chars()
+                        .next()
+                        .is_none_or(char::is_whitespace) =>
+            {
+                Some(Operator::Multiply)
+            }
+            _ => None,
+        }
+    }
+
+    fn consume_operator(&mut self, operator: Operator) {
+        if operator == Operator::Multiply
+            && self.input[self.offset..]
+                .get(..2)
+                .is_some_and(|word| word.eq_ignore_ascii_case("of"))
+        {
+            self.offset += 2;
+        } else {
+            self.bump();
         }
     }
 
@@ -281,6 +399,26 @@ impl<'a> Parser<'a> {
         self.offset += character.len_utf8();
         Some(character)
     }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn exact_integer_as_f64(value: u64) -> Result<f64, CalculatorError> {
+    if value <= 9_007_199_254_740_992 {
+        Ok(value as f64)
+    } else {
+        Err(CalculatorError::NonFinite)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Operator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Ratio,
+    Power,
 }
 
 #[cfg(test)]
@@ -339,5 +477,28 @@ mod tests {
             Calculator::default().evaluate("10 kg to m"),
             Err(CalculatorError::IncompatibleUnits)
         );
+    }
+
+    #[test]
+    fn percentages_ratios_and_base_literals() {
+        close(number("20% of 50"), 10.0);
+        close(number("16:9"), 16.0 / 9.0);
+        close(number("0xff + 0b10 + 0o10"), 265.0);
+        close(number("12.5%"), 0.125);
+    }
+
+    #[test]
+    fn list_functions_validate_arity() {
+        close(number("sum(1, 2, 3, 4)"), 10.0);
+        close(number("avg(2, 4, 9)"), 5.0);
+        close(number("min(3, -2, 8) + max(3, -2, 8)"), 6.0);
+        assert!(matches!(
+            Calculator::default().evaluate("avg()"),
+            Err(CalculatorError::InvalidArguments(_))
+        ));
+        assert!(matches!(
+            Calculator::default().evaluate("sqrt(1, 2)"),
+            Err(CalculatorError::InvalidArguments(_))
+        ));
     }
 }
