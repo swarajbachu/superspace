@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "apps/superspace",
+    "crates/ai",
     "crates/calculator",
     "crates/core",
     "crates/extensions",
