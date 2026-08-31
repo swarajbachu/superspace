@@ -9,6 +9,9 @@ The project is under active development. The implementation contract is tracked 
 [`docs/features.md`](docs/features.md), and architectural boundaries are described in
 [`docs/architecture.md`](docs/architecture.md).
 
+For moving development to another machine, see [`HANDOFF.md`](HANDOFF.md). It records the exact
+verified state, remaining work, environment setup, and next implementation sequence.
+
 ## Principles
 
 - Local-first and account-free: LAN sharing needs no cloud relay.
@@ -78,11 +81,22 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
   libasound2-dev libvulkan-dev pkg-config cmake
 ```
 
-## Inspiration
+## References and provenance
 
-Superspace is an original implementation inspired by the workflows of Tinycast and Raycast and by
-the GPUI interaction craft demonstrated in Comet/Zeron. Their code, assets, product names, and copy
-are not part of Superspace.
+Superspace is an original implementation. External projects were used as product, interaction, or
+framework references; their code, assets, names, and copy are not included in this repository.
+
+- [Tinycast](https://github.com/abue-ammar/tinycast) — launcher workflow and feature-reference
+  baseline. Audited at `f5fa11f990e90c766301b617822afa725d7e9809`; licensed AGPL-3.0. No Tinycast
+  source was copied into this MIT project.
+- [Comet, now Zeron](https://github.com/zeronsh/comet) — GPUI interaction, motion, and visual-quality
+  reference supplied by the project owner. Audited at
+  `b3fa51872f70c8f973c241b659cf0c166766f4f5`; licensed MIT. No branding or assets were copied.
+- [Raycast](https://www.raycast.com/) — product/workflow reference used to define the compatibility
+  feature catalog. Superspace is not affiliated with Raycast.
+- [wingleeio/zed](https://github.com/wingleeio/zed) — source of the actual `gpui` and
+  `gpui_platform` dependencies, pinned in `Cargo.toml` at
+  `e2ddcc6805f8c5088e62a60dfe517abcccd61a9a`. Those crates declare Apache-2.0.
 
 ## License
 

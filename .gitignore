@@ -1,9 +1,10 @@
 /target/
 /.idea/
 /.vscode/
-*.swp
-*.log
 .DS_Store
+*.log
+*.tmp
+*.swp
 .env
 dist/
 coverage/
