@@ -6072,6 +6072,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "superspace-sync"
+version = "0.1.0"
+dependencies = [
+ "png 0.18.1",
+ "superspace-network",
+ "superspace-platform",
+ "superspace-protocol",
+ "superspace-storage",
+ "tempfile",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "superspace-ui"
 version = "0.1.0"
 dependencies = [

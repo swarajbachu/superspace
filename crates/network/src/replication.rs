@@ -97,20 +97,37 @@ impl ReplicationLedger {
     /// Remote events are marked seen even when superseded, so another peer cannot replay them.
     pub fn receive(&mut self, event: &ClipboardEvent, now_millis: u64) -> ApplyDecision {
         self.clock = self.clock.receive(event.timestamp, now_millis);
+        let decision = self.preview(event);
+        if decision == ApplyDecision::Duplicate {
+            return decision;
+        }
+        self.mark_seen(event.id);
+        if decision == ApplyDecision::Apply {
+            self.current = Some((event.timestamp, event.origin, event.id));
+        }
+        decision
+    }
+
+    /// Classify an inbound event without mutating replay, clock, or conflict state.
+    ///
+    /// Coordinators use this before a fallible OS clipboard write, then call [`Self::receive`] only
+    /// after the value is successfully applied. Duplicate and superseded events can be committed
+    /// immediately.
+    #[must_use]
+    pub fn preview(&self, event: &ClipboardEvent) -> ApplyDecision {
         if self.seen.contains(&event.id) {
             return ApplyDecision::Duplicate;
         }
-        self.mark_seen(event.id);
         let incoming = (event.timestamp, event.origin, event.id);
         if self
             .current
             .as_ref()
             .is_some_and(|current| compare_event(&incoming, current).is_le())
         {
-            return ApplyDecision::Superseded;
+            ApplyDecision::Superseded
+        } else {
+            ApplyDecision::Apply
         }
-        self.current = Some(incoming);
-        ApplyDecision::Apply
     }
 
     /// Events still owed to a peer, after pruning expired entries.
@@ -238,5 +255,17 @@ mod tests {
             ledger.record_local(&foreign, [], 100),
             Err(ReplicationError::ForeignLocalOrigin)
         );
+    }
+
+    #[test]
+    fn preview_does_not_consume_an_event_before_a_fallible_apply() {
+        let local = Uuid::from_u128(1);
+        let remote = Uuid::from_u128(2);
+        let incoming = event(remote, 10, 0, Uuid::from_u128(3));
+        let mut ledger = ReplicationLedger::new(local, 0);
+        assert_eq!(ledger.preview(&incoming), ApplyDecision::Apply);
+        assert_eq!(ledger.preview(&incoming), ApplyDecision::Apply);
+        assert_eq!(ledger.receive(&incoming, 10), ApplyDecision::Apply);
+        assert_eq!(ledger.preview(&incoming), ApplyDecision::Duplicate);
     }
 }

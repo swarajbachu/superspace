@@ -10,6 +10,7 @@ members = [
     "crates/platform",
     "crates/protocol",
     "crates/storage",
+    "crates/sync",
     "crates/ui",
 ]
 
@@ -26,6 +27,7 @@ arboard = { version = "3.6", features = ["wayland-data-control"] }
 blake3 = "1.8"
 fs2 = "0.4"
 mdns-sd = { version = "0.21", default-features = false }
+png = "0.18"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
