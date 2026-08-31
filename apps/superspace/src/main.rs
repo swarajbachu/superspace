@@ -1,10 +1,11 @@
 //! Superspace command-line and desktop application entry point.
 
+use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
@@ -12,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{future::Future, net::IpAddr};
 
 use anyhow::{Context as _, Result, bail};
+use fs2::FileExt as _;
 use superspace_core::{LauncherPreferences, builtin_features};
 use superspace_productivity::{
     Item, ItemContent, ProductivityStore, expand_snippet, resolve_command, resolve_quicklink,
@@ -25,7 +27,10 @@ use uuid::Uuid;
 fn main() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
-        None => superspace_ui::run(),
+        None => {
+            ensure_clipboard_watcher()?;
+            superspace_ui::run();
+        }
         Some("apps") => print_apps()?,
         Some("features") => print_features(),
         Some("launch") => {
@@ -520,12 +525,16 @@ fn watch_clipboard(
     history_path: &Path,
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<()> {
-    let once = match arguments.next().as_deref() {
-        None => false,
-        Some("--once") => true,
+    let (once, quiet) = match arguments.next().as_deref() {
+        None => (false, false),
+        Some("--once") => (true, false),
+        Some("--service") => (false, true),
         Some(_) => bail!("usage: superspace clipboard watch [--once]"),
     };
     no_more(arguments)?;
+    let Some(_watcher_lock) = clipboard_watcher_lock(root)? else {
+        return Ok(());
+    };
     let identity =
         superspace_network::LocalIdentity::load_or_create(root.join("local-identity.cbor"))?;
     let backend = superspace_platform::NativeClipboard::connect()?;
@@ -535,13 +544,45 @@ fn watch_clipboard(
         superspace_sync::ClipboardSync::new(identity.device_id, now_u64(), backend, history, blobs);
     loop {
         let now = now_u64();
-        if let Some(event) = sync.poll_local(now, [], i64::MAX)? {
+        if let Some(event) = sync.poll_local(now, [], i64::MAX)?
+            && !quiet
+        {
             println!("captured {} {:?}", event.id, event.format);
         }
         if once {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn ensure_clipboard_watcher() -> Result<()> {
+    let root = data_root();
+    std::fs::create_dir_all(&root)?;
+    if clipboard_watcher_lock(&root)?.is_none() {
+        return Ok(());
+    }
+    Command::new(std::env::current_exe()?)
+        .args(["clipboard", "watch", "--service"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start clipboard history service")?;
+    Ok(())
+}
+
+fn clipboard_watcher_lock(root: &Path) -> Result<Option<File>> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("clipboard-watch.lock"))?;
+    match lock.try_lock_exclusive() {
+        Ok(()) => Ok(Some(lock)),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -777,6 +818,30 @@ fn no_more(mut arguments: impl Iterator<Item = String>) -> Result<()> {
         bail!("too many arguments");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clipboard_watcher_lock;
+
+    #[test]
+    fn clipboard_watcher_lock_allows_only_one_service() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let first = clipboard_watcher_lock(directory.path())
+            .expect("first lock")
+            .expect("lock available");
+        assert!(
+            clipboard_watcher_lock(directory.path())
+                .expect("second lock attempt")
+                .is_none()
+        );
+        drop(first);
+        assert!(
+            clipboard_watcher_lock(directory.path())
+                .expect("released lock")
+                .is_some()
+        );
+    }
 }
 
 fn productivity_database() -> PathBuf {

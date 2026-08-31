@@ -6372,6 +6372,7 @@ name = "superspace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs2",
  "quinn",
  "serde_json",
  "superspace-core",
@@ -6383,6 +6384,7 @@ dependencies = [
  "superspace-storage",
  "superspace-sync",
  "superspace-ui",
+ "tempfile",
  "tokio",
  "uuid",
 ]

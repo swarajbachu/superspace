@@ -12,6 +12,7 @@ desktop = ["superspace-ui/desktop"]
 
 [dependencies]
 anyhow.workspace = true
+fs2.workspace = true
 quinn.workspace = true
 serde_json.workspace = true
 superspace-core = { path = "../../crates/core" }
@@ -28,3 +29,6 @@ uuid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
