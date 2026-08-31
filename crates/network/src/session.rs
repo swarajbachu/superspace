@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use quinn::Connection;
-use superspace_protocol::{Message, TransferManifest};
+use quinn::{Connection, SendStream};
+use superspace_protocol::{
+    ClipboardEvent, DeviceId, DeviceInfo, Message, PROTOCOL_VERSION, TransferManifest,
+};
 use thiserror::Error;
 
 use crate::{
@@ -11,6 +13,181 @@ use crate::{
     write_frame,
 };
 use crate::{TransferError, TransferProgress, TransferReceiver, read_transfer_chunk};
+
+const MAX_DEVICE_NAME_CHARS: usize = 128;
+const MAX_PLATFORM_CHARS: usize = 64;
+
+/// Exchange authenticated device metadata on an outgoing connection.
+///
+/// The expected ID comes from the trusted-device record associated with the pinned certificate,
+/// preventing a valid paired certificate from claiming another installation's identity.
+///
+/// # Errors
+/// Returns a framing, stream, identity, or protocol-negotiation failure.
+pub async fn exchange_hello_outgoing(
+    connection: &Connection,
+    local: &DeviceInfo,
+    expected_peer: DeviceId,
+) -> Result<DeviceInfo, PeerSessionError> {
+    validate_local_info(local)?;
+    let (mut send, mut receive) = connection
+        .open_bi()
+        .await
+        .map_err(|_| PeerSessionError::Stream)?;
+    write_frame(&mut send, &Message::Hello(local.clone())).await?;
+    send.finish().map_err(|_| PeerSessionError::Stream)?;
+    let Message::Hello(remote) = read_frame(&mut receive).await? else {
+        return Err(PeerSessionError::UnexpectedMessage);
+    };
+    validate_remote_info(&remote, local.id, expected_peer)?;
+    Ok(remote)
+}
+
+/// Exchange authenticated device metadata on an accepted connection.
+///
+/// # Errors
+/// Returns a framing, stream, identity, or protocol-negotiation failure.
+pub async fn exchange_hello_incoming(
+    connection: &Connection,
+    local: &DeviceInfo,
+    expected_peer: DeviceId,
+) -> Result<DeviceInfo, PeerSessionError> {
+    validate_local_info(local)?;
+    let (mut send, mut receive) = connection
+        .accept_bi()
+        .await
+        .map_err(|_| PeerSessionError::Stream)?;
+    let Message::Hello(remote) = read_frame(&mut receive).await? else {
+        return Err(PeerSessionError::UnexpectedMessage);
+    };
+    validate_remote_info(&remote, local.id, expected_peer)?;
+    write_frame(&mut send, &Message::Hello(local.clone())).await?;
+    send.finish().map_err(|_| PeerSessionError::Stream)?;
+    Ok(remote)
+}
+
+/// Offer one clipboard event and wait until the peer confirms durable handling.
+///
+/// # Errors
+/// Returns a framing, stream, or mismatched-acknowledgement failure.
+pub async fn offer_clipboard(
+    connection: &Connection,
+    event: &ClipboardEvent,
+) -> Result<(), PeerSessionError> {
+    let (mut send, mut receive) = connection
+        .open_bi()
+        .await
+        .map_err(|_| PeerSessionError::Stream)?;
+    write_frame(&mut send, &Message::Clipboard(event.clone())).await?;
+    send.finish().map_err(|_| PeerSessionError::Stream)?;
+    match read_frame(&mut receive).await? {
+        Message::Acknowledge { id } if id == event.id => Ok(()),
+        Message::Acknowledge { .. } => Err(PeerSessionError::MismatchedAcknowledgement),
+        _ => Err(PeerSessionError::UnexpectedMessage),
+    }
+}
+
+/// Accepted clipboard event whose response remains unacknowledged.
+///
+/// Keeping acknowledgement explicit lets the caller fetch and verify a referenced blob or file
+/// transfer and durably apply the event before the sender drops it from offline reconciliation.
+pub struct ClipboardOffer {
+    /// Untrusted event received over the mutually authenticated connection.
+    pub event: ClipboardEvent,
+    response: SendStream,
+}
+
+impl ClipboardOffer {
+    /// Acknowledge durable processing and close the response stream.
+    ///
+    /// # Errors
+    /// Returns a framing or stream failure.
+    pub async fn acknowledge(mut self) -> Result<(), PeerSessionError> {
+        write_frame(
+            &mut self.response,
+            &Message::Acknowledge { id: self.event.id },
+        )
+        .await?;
+        self.response
+            .finish()
+            .map_err(|_| PeerSessionError::Stream)?;
+        Ok(())
+    }
+}
+
+/// Receive the next clipboard offer without acknowledging it prematurely.
+///
+/// # Errors
+/// Returns a framing, stream, or unexpected-message failure.
+pub async fn receive_clipboard_offer(
+    connection: &Connection,
+) -> Result<ClipboardOffer, PeerSessionError> {
+    let (response, mut receive) = connection
+        .accept_bi()
+        .await
+        .map_err(|_| PeerSessionError::Stream)?;
+    let Message::Clipboard(event) = read_frame(&mut receive).await? else {
+        return Err(PeerSessionError::UnexpectedMessage);
+    };
+    Ok(ClipboardOffer { event, response })
+}
+
+fn validate_local_info(info: &DeviceInfo) -> Result<(), PeerSessionError> {
+    validate_info(info)?;
+    Ok(())
+}
+
+fn validate_remote_info(
+    info: &DeviceInfo,
+    local_id: DeviceId,
+    expected_peer: DeviceId,
+) -> Result<(), PeerSessionError> {
+    validate_info(info)?;
+    if info.id == local_id || info.id != expected_peer {
+        return Err(PeerSessionError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn validate_info(info: &DeviceInfo) -> Result<(), PeerSessionError> {
+    if info.name.trim().is_empty()
+        || info.name.chars().count() > MAX_DEVICE_NAME_CHARS
+        || info.platform.trim().is_empty()
+        || info.platform.chars().count() > MAX_PLATFORM_CHARS
+    {
+        return Err(PeerSessionError::InvalidDeviceInfo);
+    }
+    if !info.protocol_versions.contains(&PROTOCOL_VERSION) {
+        return Err(PeerSessionError::IncompatibleProtocol);
+    }
+    Ok(())
+}
+
+/// Authenticated peer control-session failures.
+#[derive(Debug, Error)]
+pub enum PeerSessionError {
+    /// Protocol framing failed.
+    #[error("peer session protocol frame failed")]
+    Frame(#[from] FrameError),
+    /// QUIC stream could not open, accept, or finish.
+    #[error("peer session QUIC stream failed")]
+    Stream,
+    /// Peer sent an invalid message for the current exchange.
+    #[error("peer sent an unexpected control message")]
+    UnexpectedMessage,
+    /// Authenticated certificate was associated with a different device ID.
+    #[error("peer device identity does not match its trusted certificate")]
+    IdentityMismatch,
+    /// Device metadata was empty or exceeded protocol bounds.
+    #[error("peer device metadata is invalid")]
+    InvalidDeviceInfo,
+    /// No supported protocol version overlaps.
+    #[error("peer does not support this protocol version")]
+    IncompatibleProtocol,
+    /// Acknowledgement did not refer to the offered event.
+    #[error("peer acknowledged a different event")]
+    MismatchedAcknowledgement,
+}
 
 /// Cloneable cooperative cancellation signal for an active transfer session.
 #[derive(Clone, Debug, Default)]
@@ -388,7 +565,106 @@ mod tests {
 
     use super::*;
     use crate::{PeerCertificate, QuicEndpoint, TransportIdentity};
-    use superspace_protocol::ContentHash;
+    use superspace_protocol::{ClipboardContent, ClipboardFormat, ContentHash, HybridTimestamp};
+
+    #[tokio::test]
+    async fn hello_and_clipboard_ack_round_trip_over_pinned_quic() {
+        let client_id = uuid::Uuid::new_v4();
+        let server_id = uuid::Uuid::new_v4();
+        let client_info = DeviceInfo {
+            id: client_id,
+            name: "Linux Workstation".into(),
+            platform: "linux".into(),
+            protocol_versions: vec![PROTOCOL_VERSION],
+        };
+        let server_info = DeviceInfo {
+            id: server_id,
+            name: "MacBook".into(),
+            platform: "macos".into(),
+            protocol_versions: vec![PROTOCOL_VERSION],
+        };
+        let client_identity = TransportIdentity::generate().expect("client identity");
+        let server_identity = TransportIdentity::generate().expect("server identity");
+        let client_certificate =
+            PeerCertificate::from_der(client_identity.certificate_der().to_vec())
+                .expect("client certificate");
+        let server_certificate =
+            PeerCertificate::from_der(server_identity.certificate_der().to_vec())
+                .expect("server certificate");
+        let server = QuicEndpoint::bind(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            server_identity,
+            std::slice::from_ref(&client_certificate),
+        )
+        .expect("server");
+        let client = QuicEndpoint::bind(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            client_identity,
+            std::slice::from_ref(&server_certificate),
+        )
+        .expect("client");
+        let (server_connection, client_connection) = tokio::join!(
+            server.accept(),
+            client.connect(server.local_addr().expect("address"), &server_certificate)
+        );
+        let server_connection = server_connection.expect("server connection");
+        let client_connection = client_connection.expect("client connection");
+
+        let (server_remote, client_remote) = tokio::join!(
+            exchange_hello_incoming(&server_connection, &server_info, client_id),
+            exchange_hello_outgoing(&client_connection, &client_info, server_id)
+        );
+        assert_eq!(server_remote.expect("server hello"), client_info);
+        assert_eq!(client_remote.expect("client hello"), server_info);
+
+        let event = ClipboardEvent {
+            id: uuid::Uuid::new_v4(),
+            origin: client_id,
+            timestamp: HybridTimestamp {
+                physical_millis: 42,
+                logical: 0,
+            },
+            format: ClipboardFormat::Text,
+            content: ClipboardContent::Inline {
+                bytes: b"copied on Linux".to_vec(),
+            },
+        };
+        let (received, sent) = tokio::join!(
+            async {
+                let offer = receive_clipboard_offer(&server_connection)
+                    .await
+                    .expect("receive clipboard");
+                let received = offer.event.clone();
+                offer.acknowledge().await.expect("acknowledge clipboard");
+                received
+            },
+            offer_clipboard(&client_connection, &event)
+        );
+        sent.expect("offer clipboard");
+        assert_eq!(received, event);
+    }
+
+    #[test]
+    fn hello_validation_rejects_identity_spoofing_and_incompatible_versions() {
+        let local = uuid::Uuid::new_v4();
+        let expected = uuid::Uuid::new_v4();
+        let mut info = DeviceInfo {
+            id: uuid::Uuid::new_v4(),
+            name: "Peer".into(),
+            platform: "linux".into(),
+            protocol_versions: vec![PROTOCOL_VERSION],
+        };
+        assert!(matches!(
+            validate_remote_info(&info, local, expected),
+            Err(PeerSessionError::IdentityMismatch)
+        ));
+        info.id = expected;
+        info.protocol_versions = vec![PROTOCOL_VERSION + 1];
+        assert!(matches!(
+            validate_remote_info(&info, local, expected),
+            Err(PeerSessionError::IncompatibleProtocol)
+        ));
+    }
 
     #[tokio::test]
     async fn blob_resumes_over_mutually_authenticated_quic() {

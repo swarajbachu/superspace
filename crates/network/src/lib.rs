@@ -18,9 +18,10 @@ pub use pairing::{
 };
 pub use replication::{ApplyDecision, PendingEvent, ReplicationError, ReplicationLedger};
 pub use session::{
-    BlobSessionError, TransferCancellation, TransferSessionError, receive_transfer,
-    receive_transfer_with_progress, request_blob, send_transfer, send_transfer_with_progress,
-    serve_blob,
+    BlobSessionError, ClipboardOffer, PeerSessionError, TransferCancellation, TransferSessionError,
+    exchange_hello_incoming, exchange_hello_outgoing, offer_clipboard, receive_clipboard_offer,
+    receive_transfer, receive_transfer_with_progress, request_blob, send_transfer,
+    send_transfer_with_progress, serve_blob,
 };
 pub use transfer::{
     MAX_CHUNK_SIZE, TransferError, TransferProgress, TransferReceiver, read_transfer_chunk,
