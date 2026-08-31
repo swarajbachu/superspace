@@ -49,14 +49,10 @@ pub struct Theme {
     pub text: Hsla,
     /// Secondary text.
     pub muted: Hsla,
-    /// Hairline separator.
-    pub border: Hsla,
     /// Interactive accent.
     pub accent: Hsla,
     /// Low-emphasis icon tile.
     pub tile: Hsla,
-    /// Top-edge light reflected by the glass panel.
-    pub highlight: Hsla,
     /// Ambient window shadow.
     pub shadow: Hsla,
 }
@@ -79,10 +75,8 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             hovered: hsla(0.0, 0.0, 1.0, 0.05),
             text: hsla(0.0, 0.0, 0.94, 1.0),
             muted: hsla(0.64, 0.02, 0.64, 1.0),
-            border: hsla(0.0, 0.0, 1.0, 0.10),
             accent: hsla(0.59, 0.76, 0.67, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.06),
-            highlight: hsla(0.0, 0.0, 1.0, 0.20),
             shadow: hsla(0.0, 0.0, 0.0, 0.58),
         },
         ThemeKind::Midnight => Theme {
@@ -92,10 +86,8 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             hovered: hsla(0.0, 0.0, 1.0, 0.05),
             text: hsla(0.0, 0.0, 0.96, 1.0),
             muted: hsla(0.0, 0.0, 0.62, 1.0),
-            border: hsla(0.0, 0.0, 1.0, 0.10),
             accent: hsla(0.56, 0.72, 0.68, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.07),
-            highlight: hsla(0.0, 0.0, 1.0, 0.16),
             shadow: hsla(0.0, 0.0, 0.0, 0.68),
         },
         ThemeKind::Dawn => Theme {
@@ -105,10 +97,8 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             hovered: hsla(0.0, 0.0, 1.0, 0.26),
             text: hsla(0.66, 0.12, 0.14, 1.0),
             muted: hsla(0.66, 0.06, 0.42, 1.0),
-            border: hsla(0.0, 0.0, 1.0, 0.48),
             accent: hsla(0.60, 0.58, 0.46, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.36),
-            highlight: hsla(0.0, 0.0, 1.0, 0.72),
             shadow: hsla(0.66, 0.10, 0.12, 0.26),
         },
     }

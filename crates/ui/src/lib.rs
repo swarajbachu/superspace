@@ -29,11 +29,11 @@ pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {
         theme::install(cx);
         search_input::init(cx);
-        let bounds = Bounds::centered(None, size(px(750.0), px(475.0)), cx);
+        let bounds = Bounds::centered(None, size(px(680.0), px(420.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(680.0), px(420.0))),
+                window_min_size: Some(size(px(620.0), px(380.0))),
                 titlebar: None,
                 window_background: WindowBackgroundAppearance::Blurred,
                 kind: WindowKind::PopUp,

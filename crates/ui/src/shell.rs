@@ -375,61 +375,43 @@ impl Render for Palette {
             .flex_col()
             .bg(colors.background)
             .text_color(colors.text)
-            .border_1()
-            .border_color(colors.border)
-            .rounded(px(24.0))
-            .shadow(vec![
-                BoxShadow {
-                    color: colors.shadow,
-                    offset: point(px(0.0), px(16.0)),
-                    blur_radius: px(42.0),
-                    spread_radius: px(-8.0),
-                    inset: false,
-                },
-                BoxShadow {
-                    color: colors.highlight.opacity(0.32),
-                    offset: point(px(0.0), px(1.0)),
-                    blur_radius: px(0.0),
-                    spread_radius: px(0.0),
-                    inset: true,
-                },
-            ])
+            .rounded(px(20.0))
+            .shadow(vec![BoxShadow {
+                color: colors.shadow,
+                offset: point(px(0.0), px(12.0)),
+                blur_radius: px(36.0),
+                spread_radius: px(-8.0),
+                inset: false,
+            }])
             .overflow_hidden()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .child(
-                div()
-                    .h(px(60.0))
-                    .px(px(20.0))
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(44.0))
-                            .child(self.search_input.clone()),
-                    ),
+                div().h(px(52.0)).px(px(16.0)).flex().items_center().child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(38.0))
+                        .child(self.search_input.clone()),
+                ),
             )
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .px(px(10.0))
-                    .pt(px(8.0))
-                    .pb(px(6.0))
+                    .px(px(8.0))
+                    .pt(px(5.0))
+                    .pb(px(4.0))
                     .flex()
                     .flex_col()
                     .child(
                         div()
-                            .h(px(26.0))
-                            .px(px(8.0))
+                            .h(px(22.0))
+                            .px(px(6.0))
                             .flex()
                             .items_center()
                             .justify_between()
-                            .text_size(px(12.0))
+                            .text_size(px(11.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.muted)
                             .child(section_title)
@@ -470,14 +452,12 @@ impl Render for Palette {
             )
             .child(
                 div()
-                    .h(px(44.0))
-                    .px(px(16.0))
+                    .h(px(38.0))
+                    .px(px(12.0))
                     .flex()
                     .items_center()
                     .justify_between()
-                    .border_t_1()
-                    .border_color(colors.border)
-                    .gap(px(12.0))
+                    .gap(px(10.0))
                     .child(
                         div()
                             .flex_1()
@@ -485,7 +465,7 @@ impl Render for Palette {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(12.0))
+                            .text_size(px(11.0))
                             .text_color(colors.muted)
                             .child(footer_label),
                     )
@@ -493,8 +473,8 @@ impl Render for Palette {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(9.0))
-                            .text_size(px(12.0))
+                            .gap(px(7.0))
+                            .text_size(px(11.0))
                             .text_color(colors.muted)
                             .child(if action_mode { "Run" } else { "Open" })
                             .child(keycap("↵", colors))
@@ -502,15 +482,6 @@ impl Render for Palette {
                                 footer.child("Actions").child(keycap("⌘ K", colors))
                             }),
                     ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left(px(20.0))
-                    .right(px(20.0))
-                    .h(px(1.0))
-                    .bg(colors.highlight),
             )
             .with_animation(
                 "palette-enter",
@@ -538,12 +509,12 @@ fn result_row(
     }
     div()
         .id(("result-row", index))
-        .h(px(46.0))
-        .px(px(9.0))
+        .h(px(40.0))
+        .px(px(8.0))
         .flex()
         .items_center()
-        .gap(px(10.0))
-        .rounded(px(10.0))
+        .gap(px(9.0))
+        .rounded(px(8.0))
         .when(selected, |row| row.bg(colors.selected))
         .hover(move |row| {
             row.bg(if selected {
@@ -570,13 +541,13 @@ fn result_row(
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(7.0))
                 .child(
                     div()
                         .flex_shrink_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(px(14.0))
+                        .text_size(px(13.0))
                         .font_weight(FontWeight::MEDIUM)
                         .child(entry.title),
                 )
@@ -588,7 +559,7 @@ fn result_row(
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(11.0))
+                            .text_size(px(10.0))
                             .text_color(colors.muted)
                             .child(entry.subtitle),
                     )
@@ -597,7 +568,7 @@ fn result_row(
         .child(
             div()
                 .flex_shrink_0()
-                .text_size(px(12.0))
+                .text_size(px(11.0))
                 .text_color(colors.muted)
                 .child(entry.kind.label()),
         )
@@ -613,12 +584,12 @@ fn calculation_row(
 ) -> AnyElement {
     div()
         .id(("calculation-row", index))
-        .h(px(96.0))
-        .px(px(18.0))
+        .h(px(78.0))
+        .px(px(14.0))
         .flex()
         .items_center()
-        .gap(px(18.0))
-        .rounded(px(10.0))
+        .gap(px(14.0))
+        .rounded(px(8.0))
         .bg(if selected {
             colors.selected
         } else {
@@ -648,7 +619,7 @@ fn calculation_row(
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(18.0))
+                .gap(px(14.0))
                 .child(
                     div()
                         .flex_1()
@@ -656,13 +627,13 @@ fn calculation_row(
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(20.0))
+                        .text_size(px(17.0))
                         .font_weight(FontWeight::MEDIUM)
                         .child(entry.subtitle),
                 )
                 .child(
                     div()
-                        .text_size(px(18.0))
+                        .text_size(px(15.0))
                         .text_color(colors.muted)
                         .child("→"),
                 )
@@ -673,7 +644,7 @@ fn calculation_row(
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(24.0))
+                        .text_size(px(21.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(entry.title),
                 ),
@@ -691,12 +662,12 @@ fn action_row(
     let shortcut = action.shortcut.clone();
     div()
         .id(("action-row", index))
-        .h(px(46.0))
-        .px(px(9.0))
+        .h(px(40.0))
+        .px(px(8.0))
         .flex()
         .items_center()
-        .gap(px(10.0))
-        .rounded(px(10.0))
+        .gap(px(9.0))
+        .rounded(px(8.0))
         .when(selected, |row| row.bg(colors.selected))
         .hover(move |row| {
             row.bg(if selected {
@@ -710,11 +681,11 @@ fn action_row(
             this.handle_event(palette_event, window, cx);
             cx.notify();
         }))
-        .child(div().w(px(26.0)).text_color(colors.muted).child("›"))
+        .child(div().w(px(24.0)).text_color(colors.muted).child("›"))
         .child(
             div()
                 .flex_1()
-                .text_size(px(14.0))
+                .text_size(px(13.0))
                 .font_weight(FontWeight::MEDIUM)
                 .child(action.title.clone()),
         )
@@ -740,8 +711,8 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
     if let Some(path) = entry.icon.as_ref().filter(|path| is_renderable_image(path)) {
         let fallback_label = label.clone();
         return img(path.clone())
-            .size(px(26.0))
-            .rounded(px(6.0))
+            .size(px(24.0))
+            .rounded(px(5.0))
             .with_fallback(move || fallback_icon(fallback_label.clone(), colors))
             .into_any_element();
     }
@@ -750,13 +721,13 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
 
 fn fallback_icon(label: String, colors: theme::Theme) -> AnyElement {
     div()
-        .size(px(26.0))
+        .size(px(24.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.0))
+        .rounded(px(5.0))
         .bg(colors.tile)
-        .text_size(px(11.0))
+        .text_size(px(10.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(colors.muted)
         .child(label)
@@ -765,14 +736,13 @@ fn fallback_icon(label: String, colors: theme::Theme) -> AnyElement {
 
 fn keycap(label: impl Into<String>, colors: theme::Theme) -> AnyElement {
     div()
-        .h(px(20.0))
-        .px(px(6.0))
+        .h(px(18.0))
+        .px(px(5.0))
         .flex()
         .items_center()
-        .rounded(px(5.0))
-        .border_1()
-        .border_color(colors.highlight.opacity(0.44))
-        .text_size(px(10.0))
+        .rounded(px(4.0))
+        .bg(colors.surface)
+        .text_size(px(9.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(colors.muted)
         .child(label.into())
