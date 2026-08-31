@@ -12,7 +12,8 @@ const LENGTH_BYTES: usize = 4;
 ///
 /// Returns [`FrameError::TooLarge`] or a serialization failure.
 pub fn encode_frame(message: &Message) -> Result<Vec<u8>, FrameError> {
-    let payload = serde_json::to_vec(message)?;
+    let mut payload = Vec::new();
+    ciborium::into_writer(message, &mut payload).map_err(|_| FrameError::Codec)?;
     if payload.len() > MAX_FRAME_SIZE {
         return Err(FrameError::TooLarge);
     }
@@ -47,7 +48,7 @@ pub fn decode_frame(frame: &[u8]) -> Result<Message, FrameError> {
             FrameError::TrailingData
         });
     }
-    serde_json::from_slice(&frame[LENGTH_BYTES..]).map_err(FrameError::Codec)
+    ciborium::from_reader(&frame[LENGTH_BYTES..]).map_err(|_| FrameError::Codec)
 }
 
 /// Write one framed message to a QUIC stream.
@@ -82,7 +83,7 @@ pub async fn read_frame(stream: &mut RecvStream) -> Result<Message, FrameError> 
         .read_exact(&mut payload)
         .await
         .map_err(|_| FrameError::Read)?;
-    serde_json::from_slice(&payload).map_err(FrameError::Codec)
+    ciborium::from_reader(payload.as_slice()).map_err(|_| FrameError::Codec)
 }
 
 /// Protocol framing and stream failures.
@@ -99,7 +100,7 @@ pub enum FrameError {
     TrailingData,
     /// Message serialization or parsing failed.
     #[error("network frame contains an invalid protocol message")]
-    Codec(#[from] serde_json::Error),
+    Codec,
     /// QUIC receive stream failed.
     #[error("network frame read failed")]
     Read,
@@ -110,7 +111,7 @@ pub enum FrameError {
 
 #[cfg(test)]
 mod tests {
-    use superspace_protocol::{DeviceInfo, PROTOCOL_VERSION};
+    use superspace_protocol::{DeviceInfo, PROTOCOL_VERSION, TransferChunk};
     use uuid::Uuid;
 
     use super::*;
@@ -146,5 +147,18 @@ mod tests {
             .expect("frame bound fits u32")
             .to_be_bytes();
         assert!(matches!(decode_frame(&prefix), Err(FrameError::TooLarge)));
+    }
+
+    #[test]
+    fn maximum_binary_chunk_fits_without_json_expansion() {
+        let message = Message::TransferChunk(TransferChunk {
+            transfer_id: Uuid::nil(),
+            entry_index: 0,
+            offset: 0,
+            bytes: vec![255; crate::MAX_CHUNK_SIZE],
+        });
+        let frame = encode_frame(&message).expect("encode maximum chunk");
+        assert!(frame.len() < MAX_FRAME_SIZE);
+        assert_eq!(decode_frame(&frame).expect("decode maximum chunk"), message);
     }
 }

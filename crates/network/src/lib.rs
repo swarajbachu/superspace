@@ -1,5 +1,6 @@
 //! Peer synchronization state machines, independent of the concrete QUIC transport.
 
+mod blob;
 mod discovery;
 mod frame;
 mod pairing;
@@ -7,6 +8,7 @@ mod replication;
 mod transfer;
 mod transport;
 
+pub use blob::{BlobReceiver, BlobTransferError, read_blob_chunk};
 pub use discovery::{DiscoveryError, DiscoveryEvent, NearbyDevice, NearbyDiscovery, SERVICE_TYPE};
 pub use frame::{FrameError, MAX_FRAME_SIZE, decode_frame, encode_frame, read_frame, write_frame};
 pub use pairing::{

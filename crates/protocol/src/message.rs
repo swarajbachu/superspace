@@ -32,6 +32,12 @@ impl ContentHash {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Lowercase hexadecimal representation used for content-addressed filenames.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        blake3::Hash::from_bytes(self.0).to_hex().to_string()
+    }
 }
 
 impl fmt::Debug for ContentHash {
@@ -81,6 +87,7 @@ pub enum ClipboardContent {
     /// Inline bytes carried by the event.
     Inline {
         /// Uncompressed payload.
+        #[serde(with = "serde_bytes")]
         bytes: Vec<u8>,
     },
     /// Blob transferred separately.
@@ -173,7 +180,23 @@ pub struct TransferChunk {
     /// Byte offset where this chunk starts.
     pub offset: u64,
     /// Raw file bytes.
+    #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
+}
+
+/// One bounded segment of a content-addressed clipboard blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobChunk {
+    /// Digest announced by the clipboard event.
+    pub hash: ContentHash,
+    /// Byte offset where this segment begins.
+    pub offset: u64,
+    /// Raw segment bytes.
+    #[serde(with = "serde_bytes")]
+    pub bytes: Vec<u8>,
+    /// True only for the segment ending at the announced blob length.
+    pub complete: bool,
 }
 
 impl TransferManifest {
@@ -204,6 +227,15 @@ pub enum Message {
     Hello(DeviceInfo),
     /// Offers a clipboard event.
     Clipboard(ClipboardEvent),
+    /// Requests a content-addressed clipboard blob from a resumable byte offset.
+    BlobRequest {
+        /// Requested content digest.
+        hash: ContentHash,
+        /// Receiver's verified partial byte count.
+        offset: u64,
+    },
+    /// Streams one bounded clipboard blob segment.
+    BlobChunk(BlobChunk),
     /// Announces a file transfer.
     TransferOffer(TransferManifest),
     /// Streams one file segment after an accepted offer.
