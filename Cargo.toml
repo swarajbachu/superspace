@@ -4,6 +4,7 @@ members = [
     "apps/superspace",
     "crates/calculator",
     "crates/core",
+    "crates/extensions",
     "crates/network",
     "crates/protocol",
     "crates/storage",
@@ -23,11 +24,13 @@ blake3 = "1.8"
 fs2 = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+semver = { version = "1.0", features = ["serde"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 snow = "0.10"
 thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 tempfile = "3.22"
+wasmparser = "0.239"
 gpui = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a" }
 gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a", features = ["wayland", "x11", "font-kit", "runtime_shaders"] }
 

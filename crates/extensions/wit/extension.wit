@@ -1,0 +1,30 @@
+package superspace:extension@1.0.0;
+
+interface host {
+  record action {
+    id: string,
+    title: string,
+  }
+
+  variant view {
+    list(list<string>),
+    grid(list<string>),
+    detail(string),
+    markdown(string),
+    form(list<string>),
+    menu(list<action>),
+    progress(float32),
+  }
+
+  set-view: func(value: view);
+  navigate: func(command: string);
+  clipboard-read: func() -> result<string, string>;
+  clipboard-write: func(value: string) -> result<_, string>;
+  fetch: func(origin: string, path: string) -> result<list<u8>, string>;
+}
+
+world extension {
+  import host;
+  export run: func(command: string, query: string) -> result<_, string>;
+  export action: func(id: string) -> result<_, string>;
+}

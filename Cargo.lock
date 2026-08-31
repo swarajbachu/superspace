@@ -2550,6 +2550,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "foldhash 0.1.5",
+ "serde",
 ]
 
 [[package]]
@@ -5377,6 +5378,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "superspace-extensions"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "wasmparser",
+]
+
+[[package]]
 name = "superspace-network"
 version = "0.1.0"
 dependencies = [
@@ -6294,6 +6307,19 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.239.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c9d90bb93e764f6beabf1d02028c70a2156a6583e63ac4218dd07ef733368b0"
+dependencies = [
+ "bitflags 2.13.1",
+ "hashbrown 0.15.5",
+ "indexmap",
+ "semver",
+ "serde",
 ]
 
 [[package]]
