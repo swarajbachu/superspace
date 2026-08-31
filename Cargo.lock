@@ -6325,12 +6325,14 @@ name = "superspace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "quinn",
  "serde_json",
  "superspace-core",
  "superspace-files",
  "superspace-network",
  "superspace-platform",
  "superspace-productivity",
+ "superspace-protocol",
  "superspace-storage",
  "superspace-sync",
  "superspace-ui",

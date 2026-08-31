@@ -12,12 +12,14 @@ desktop = ["superspace-ui/desktop"]
 
 [dependencies]
 anyhow.workspace = true
+quinn.workspace = true
 serde_json.workspace = true
 superspace-core = { path = "../../crates/core" }
 superspace-files = { path = "../../crates/files" }
 superspace-network = { path = "../../crates/network" }
 superspace-platform = { path = "../../crates/platform" }
 superspace-productivity = { path = "../../crates/productivity" }
+superspace-protocol = { path = "../../crates/protocol" }
 superspace-storage = { path = "../../crates/storage" }
 superspace-sync = { path = "../../crates/sync" }
 superspace-ui = { path = "../../crates/ui" }

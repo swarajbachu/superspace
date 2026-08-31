@@ -3,11 +3,13 @@
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{future::Future, net::IpAddr};
 
 use anyhow::{Context as _, Result, bail};
 use superspace_core::{LauncherPreferences, builtin_features};
@@ -103,11 +105,140 @@ fn nearby(mut arguments: impl Iterator<Item = String>) -> Result<()> {
             }
             pair_device(&root, action == "pair-listen", address, name)?;
         }
+        "clipboard-listen" | "clipboard-connect" => {
+            let address = required(&mut arguments, "socket address")?.parse::<SocketAddr>()?;
+            let peer_id = required(&mut arguments, "trusted device id")?.parse::<Uuid>()?;
+            let name = arguments.collect::<Vec<_>>().join(" ");
+            if name.trim().is_empty() {
+                bail!("usage: superspace nearby {action} <ip:port> <peer-id> <device-name>");
+            }
+            run_peer_clipboard(&root, action == "clipboard-listen", address, peer_id, name)?;
+        }
         _ => bail!(
-            "usage: superspace nearby <identity|trusted|enable|revoke|forget|pair-listen|pair-connect> [arguments]"
+            "usage: superspace nearby <identity|trusted|enable|revoke|forget|pair-listen|pair-connect|clipboard-listen|clipboard-connect> [arguments]"
         ),
     }
     Ok(())
+}
+
+fn run_peer_clipboard(
+    root: &Path,
+    listen: bool,
+    address: SocketAddr,
+    peer_id: Uuid,
+    name: String,
+) -> Result<()> {
+    let identity =
+        superspace_network::LocalIdentity::load_or_create(root.join("local-identity.cbor"))?;
+    let trust = TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))?;
+    let peer = trust
+        .get(peer_id)?
+        .filter(|peer| peer.enabled)
+        .with_context(|| format!("trusted device is missing or revoked: {peer_id}"))?;
+    let peer_certificate =
+        superspace_network::PeerCertificate::from_der(peer.certificate_der.clone())?;
+    let bind_ip = if listen {
+        address.ip()
+    } else if address.is_ipv6() {
+        IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+    };
+    let endpoint = superspace_network::QuicEndpoint::bind(
+        SocketAddr::new(bind_ip, if listen { address.port() } else { 0 }),
+        identity.transport.clone(),
+        std::slice::from_ref(&peer_certificate),
+    )?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let local_info = superspace_protocol::DeviceInfo {
+            id: identity.device_id,
+            name,
+            platform: std::env::consts::OS.into(),
+            protocol_versions: vec![superspace_protocol::PROTOCOL_VERSION],
+        };
+        let connection = if listen {
+            println!("waiting for {} on {}", peer.name, endpoint.local_addr()?);
+            let connection = endpoint.accept().await?;
+            superspace_network::exchange_hello_incoming(&connection, &local_info, peer_id).await?;
+            connection
+        } else {
+            let connection = endpoint.connect(address, &peer_certificate).await?;
+            superspace_network::exchange_hello_outgoing(&connection, &local_info, peer_id).await?;
+            connection
+        };
+        println!("encrypted clipboard session active with {}", peer.name);
+        clipboard_connection_loop(&connection, root, identity.device_id, peer_id).await
+    })
+}
+
+type ClipboardOfferFuture =
+    Pin<Box<dyn Future<Output = (Uuid, Result<(), superspace_network::PeerSessionError>)>>>;
+
+async fn clipboard_connection_loop(
+    connection: &quinn::Connection,
+    root: &Path,
+    local_id: Uuid,
+    peer_id: Uuid,
+) -> Result<()> {
+    let backend = superspace_platform::NativeClipboard::connect()?;
+    let history = ClipboardStore::open(root.join("clipboard.sqlite"))?;
+    let blobs = BlobStore::open(root.join("clipboard-blobs"))?;
+    let mut sync =
+        superspace_sync::ClipboardSync::new(local_id, now_u64(), backend, history, blobs);
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
+    let mut outgoing: Option<ClipboardOfferFuture> = None;
+    loop {
+        if let Some(active) = outgoing.as_mut() {
+            tokio::select! {
+                (event_id, result) = active => {
+                    result?;
+                    if !sync.acknowledge(peer_id, event_id) {
+                        bail!("clipboard acknowledgement did not match the pending peer event");
+                    }
+                    outgoing = None;
+                }
+                offer = superspace_network::receive_clipboard_offer(connection) => {
+                    apply_clipboard_offer(&mut sync, offer?, now_u64()).await?;
+                }
+                _ = interval.tick() => {}
+            }
+        } else {
+            tokio::select! {
+                offer = superspace_network::receive_clipboard_offer(connection) => {
+                    apply_clipboard_offer(&mut sync, offer?, now_u64()).await?;
+                }
+                _ = interval.tick() => {
+                    let now = now_u64();
+                    let expires = i64::try_from(now)
+                        .unwrap_or(i64::MAX)
+                        .saturating_add(7 * 24 * 60 * 60 * 1_000);
+                    if let Some(event) = sync.poll_local(now, [peer_id], expires)? {
+                        let connection = connection.clone();
+                        let event_id = event.id;
+                        outgoing = Some(Box::pin(async move {
+                            let result = superspace_network::offer_clipboard(&connection, &event).await;
+                            (event_id, result)
+                        }));
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn apply_clipboard_offer(
+    sync: &mut superspace_sync::ClipboardSync<superspace_platform::NativeClipboard>,
+    offer: superspace_network::ClipboardOffer,
+    now: u64,
+) -> Result<()> {
+    let outcome = sync.receive(&offer.event, now)?;
+    if outcome.should_acknowledge() {
+        offer.acknowledge().await?;
+        Ok(())
+    } else {
+        bail!("peer offered non-inline clipboard content; blob transfer dispatch is not active yet")
+    }
 }
 
 fn pair_device(root: &Path, listen: bool, address: SocketAddr, name: String) -> Result<()> {
