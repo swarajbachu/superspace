@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/superspace",
+    "crates/core",
+    "crates/protocol",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/swaraj/superspace"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0"
+blake3 = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2
