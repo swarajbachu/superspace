@@ -41,6 +41,9 @@ pub enum TransferError {
     /// Destination name or path is unsafe.
     #[error("transfer destination is unsafe")]
     UnsafeDestination,
+    /// Existing staging content conflicts with the authenticated manifest.
+    #[error("file transfer resume state is invalid")]
+    InvalidResumeState,
 }
 
 struct ReceivingEntry {
@@ -75,19 +78,15 @@ impl TransferReceiver {
         validate_single_component(&manifest.name)?;
         let incoming_root = incoming_root.into();
         fs::create_dir_all(&incoming_root)?;
-        let required = manifest
-            .entries
-            .iter()
-            .try_fold(0_u64, |total, entry| total.checked_add(entry.size))
-            .ok_or(TransferError::InsufficientSpace)?;
-        let margin = 16 * 1024 * 1024_u64;
-        if fs2::available_space(&incoming_root)? < required.saturating_add(margin) {
-            return Err(TransferError::InsufficientSpace);
-        }
-
         let staging_root = incoming_root.join(format!(".{}.partial", manifest.id));
-        fs::create_dir(&staging_root)?;
+        match fs::create_dir(&staging_root) {
+            Ok(()) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists && staging_root.is_dir() => {}
+            Err(error) => return Err(error.into()),
+        }
         let mut entries = Vec::with_capacity(manifest.entries.len());
+        let mut required = 0_u64;
         for (index, entry) in manifest.entries.iter().enumerate() {
             let final_path = staging_root.join(&entry.relative_path);
             let parent = final_path
@@ -95,20 +94,49 @@ impl TransferReceiver {
                 .ok_or(TransferError::UnsafeDestination)?;
             fs::create_dir_all(parent)?;
             let partial_path = final_path.with_extension(format!("superspace-part-{index}"));
-            let file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&partial_path)?;
+            if final_path.exists() {
+                if !final_path.is_file()
+                    || fs::metadata(&final_path)?.len() != entry.size
+                    || verify_hash(&final_path, entry.hash).is_err()
+                {
+                    return Err(TransferError::InvalidResumeState);
+                }
+                entries.push(ReceivingEntry {
+                    partial_path,
+                    final_path,
+                    file: None,
+                    received: entry.size,
+                    expected_size: entry.size,
+                    expected_hash: entry.hash,
+                    complete: true,
+                });
+                continue;
+            }
+            let (file, received) = match fs::metadata(&partial_path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() <= entry.size => (
+                    OpenOptions::new().append(true).open(&partial_path)?,
+                    metadata.len(),
+                ),
+                Ok(_) => return Err(TransferError::InvalidResumeState),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+                    OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&partial_path)?,
+                    0,
+                ),
+                Err(error) => return Err(error.into()),
+            };
             let mut receiving_entry = ReceivingEntry {
                 partial_path,
                 final_path,
                 file: Some(file),
-                received: 0,
+                received,
                 expected_size: entry.size,
                 expected_hash: entry.hash,
                 complete: false,
             };
-            if entry.size == 0 {
+            if received == entry.size {
                 let file = receiving_entry
                     .file
                     .take()
@@ -118,7 +146,14 @@ impl TransferReceiver {
                 fs::rename(&receiving_entry.partial_path, &receiving_entry.final_path)?;
                 receiving_entry.complete = true;
             }
+            required = required
+                .checked_add(entry.size - received)
+                .ok_or(TransferError::InsufficientSpace)?;
             entries.push(receiving_entry);
+        }
+        let margin = 16 * 1024 * 1024_u64;
+        if fs2::available_space(&incoming_root)? < required.saturating_add(margin) {
+            return Err(TransferError::InsufficientSpace);
         }
         Ok(Self {
             manifest,
@@ -401,6 +436,41 @@ mod tests {
                 .expect("empty file metadata")
                 .len(),
             0
+        );
+    }
+
+    #[test]
+    fn resumes_partial_files_after_receiver_restart() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let bytes = b"resumable transfer bytes";
+        let manifest = manifest(bytes);
+        {
+            let mut receiver =
+                TransferReceiver::begin(directory.path(), manifest.clone()).expect("begin");
+            receiver
+                .accept(&TransferChunk {
+                    transfer_id: manifest.id,
+                    entry_index: 0,
+                    offset: 0,
+                    bytes: bytes[..9].to_vec(),
+                })
+                .expect("partial chunk");
+        }
+        let mut receiver =
+            TransferReceiver::begin(directory.path(), manifest.clone()).expect("resume");
+        assert_eq!(receiver.resume_offsets(), [9]);
+        receiver
+            .accept(&TransferChunk {
+                transfer_id: manifest.id,
+                entry_index: 0,
+                offset: 9,
+                bytes: bytes[9..].to_vec(),
+            })
+            .expect("final chunk");
+        let destination = receiver.finish().expect("finish");
+        assert_eq!(
+            fs::read(destination.join("folder/hello.txt")).expect("read"),
+            bytes
         );
     }
 }
