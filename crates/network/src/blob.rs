@@ -94,6 +94,12 @@ impl BlobReceiver {
         self.received
     }
 
+    /// Authenticated digest requested from the peer.
+    #[must_use]
+    pub const fn expected_hash(&self) -> ContentHash {
+        self.expected_hash
+    }
+
     /// Whether final content already passed integrity verification.
     #[must_use]
     pub const fn is_complete(&self) -> bool {
