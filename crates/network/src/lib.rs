@@ -31,7 +31,8 @@ pub use session::{
     send_transfer, send_transfer_with_progress, serve_blob,
 };
 pub use transfer::{
-    MAX_CHUNK_SIZE, TransferError, TransferProgress, TransferReceiver, read_transfer_chunk,
+    MAX_CHUNK_SIZE, PreparedTransfer, TransferError, TransferProgress, TransferReceiver,
+    prepare_transfer, read_transfer_chunk,
 };
 pub use transport::{
     PeerCertificate, QuicEndpoint, TRANSPORT_SERVER_NAME, TransportError, TransportIdentity,

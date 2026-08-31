@@ -190,6 +190,10 @@ impl TransferRequest {
         self.response
             .finish()
             .map_err(|_| TransferSessionError::Stream)?;
+        self.response
+            .stopped()
+            .await
+            .map_err(|_| TransferSessionError::Stream)?;
         Ok(destination)
     }
 }

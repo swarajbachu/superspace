@@ -114,11 +114,125 @@ fn nearby(mut arguments: impl Iterator<Item = String>) -> Result<()> {
             }
             run_peer_clipboard(&root, action == "clipboard-listen", address, peer_id, name)?;
         }
+        "file-listen" => {
+            let address = required(&mut arguments, "socket address")?.parse::<SocketAddr>()?;
+            let peer_id = required(&mut arguments, "trusted device id")?.parse::<Uuid>()?;
+            let name = arguments.collect::<Vec<_>>().join(" ");
+            if name.trim().is_empty() {
+                bail!("usage: superspace nearby file-listen <ip:port> <peer-id> <device-name>");
+            }
+            run_peer_file(&root, true, address, peer_id, name, None)?;
+        }
+        "file-send" => {
+            let address = required(&mut arguments, "socket address")?.parse::<SocketAddr>()?;
+            let peer_id = required(&mut arguments, "trusted device id")?.parse::<Uuid>()?;
+            let path = PathBuf::from(required(&mut arguments, "file or folder path")?);
+            let name = arguments.collect::<Vec<_>>().join(" ");
+            if name.trim().is_empty() {
+                bail!(
+                    "usage: superspace nearby file-send <ip:port> <peer-id> <path> <device-name>"
+                );
+            }
+            run_peer_file(&root, false, address, peer_id, name, Some(&path))?;
+        }
         _ => bail!(
-            "usage: superspace nearby <identity|trusted|enable|revoke|forget|pair-listen|pair-connect|clipboard-listen|clipboard-connect> [arguments]"
+            "usage: superspace nearby <identity|trusted|enable|revoke|forget|pair-listen|pair-connect|clipboard-listen|clipboard-connect|file-listen|file-send> [arguments]"
         ),
     }
     Ok(())
+}
+
+fn run_peer_file(
+    root: &Path,
+    listen: bool,
+    address: SocketAddr,
+    peer_id: Uuid,
+    name: String,
+    source: Option<&Path>,
+) -> Result<()> {
+    let identity =
+        superspace_network::LocalIdentity::load_or_create(root.join("local-identity.cbor"))?;
+    let trust = TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))?;
+    let peer = trust
+        .get(peer_id)?
+        .filter(|peer| peer.enabled)
+        .with_context(|| format!("trusted device is missing or revoked: {peer_id}"))?;
+    let peer_certificate =
+        superspace_network::PeerCertificate::from_der(peer.certificate_der.clone())?;
+    let prepared = source
+        .map(|path| superspace_network::prepare_transfer(path, identity.device_id))
+        .transpose()?;
+    let bind_ip = if listen {
+        address.ip()
+    } else if address.is_ipv6() {
+        IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+    };
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let endpoint = superspace_network::QuicEndpoint::bind(
+            SocketAddr::new(bind_ip, if listen { address.port() } else { 0 }),
+            identity.transport.clone(),
+            std::slice::from_ref(&peer_certificate),
+        )?;
+        let local_info = superspace_protocol::DeviceInfo {
+            id: identity.device_id,
+            name,
+            platform: std::env::consts::OS.into(),
+            protocol_versions: vec![superspace_protocol::PROTOCOL_VERSION],
+        };
+        let connection = if listen {
+            println!(
+                "waiting for a file from {} on {}",
+                peer.name,
+                endpoint.local_addr()?
+            );
+            let connection = endpoint.accept().await?;
+            superspace_network::exchange_hello_incoming(&connection, &local_info, peer_id).await?;
+            connection
+        } else {
+            let connection = endpoint.connect(address, &peer_certificate).await?;
+            superspace_network::exchange_hello_outgoing(&connection, &local_info, peer_id).await?;
+            connection
+        };
+        let cancellation = superspace_network::TransferCancellation::new();
+        if let Some(prepared) = prepared {
+            let display_name = prepared.manifest().name.clone();
+            superspace_network::send_transfer_with_progress(
+                &connection,
+                prepared.source_root(),
+                prepared.manifest(),
+                &cancellation,
+                |progress| print_transfer_progress("sending", &display_name, &progress),
+            )
+            .await?;
+            println!("sent {display_name}");
+        } else {
+            let destination = superspace_network::receive_transfer_with_progress(
+                &connection,
+                root.join("incoming"),
+                &cancellation,
+                |progress| print_transfer_progress("receiving", "transfer", &progress),
+            )
+            .await?;
+            println!("received {}", destination.display());
+        }
+        Result::<()>::Ok(())
+    })
+}
+
+fn print_transfer_progress(
+    operation: &str,
+    name: &str,
+    progress: &superspace_network::TransferProgress,
+) {
+    eprintln!(
+        "{operation} {name}: {}/{} bytes ({}/{})",
+        progress.completed_bytes,
+        progress.total_bytes,
+        progress.completed_files,
+        progress.total_files
+    );
 }
 
 fn run_peer_clipboard(

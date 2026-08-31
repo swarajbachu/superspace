@@ -2,11 +2,86 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
-use superspace_protocol::{ContentHash, TransferChunk, TransferManifest};
+use superspace_protocol::{ContentHash, DeviceId, TransferChunk, TransferEntry, TransferManifest};
 use thiserror::Error;
 
 /// Maximum application payload per file chunk.
 pub const MAX_CHUNK_SIZE: usize = 256 * 1024;
+const MAX_TRANSFER_ENTRIES: usize = 100_000;
+
+/// Deterministic, integrity-hashed source ready for [`crate::send_transfer`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedTransfer {
+    source_root: PathBuf,
+    manifest: TransferManifest,
+}
+
+impl PreparedTransfer {
+    /// Root against which every manifest entry is resolved.
+    #[must_use]
+    pub fn source_root(&self) -> &Path {
+        &self.source_root
+    }
+
+    /// Validated manifest containing stable relative paths, sizes, and BLAKE3 digests.
+    #[must_use]
+    pub const fn manifest(&self) -> &TransferManifest {
+        &self.manifest
+    }
+}
+
+/// Recursively inspect and hash one file or directory for nearby transfer.
+///
+/// Traversal is deterministic and never follows symbolic links. Hashes are streamed with bounded
+/// memory, and a source that changes size while being prepared is rejected.
+///
+/// # Errors
+/// Returns an I/O, unsafe path, unsupported source, symlink, entry-limit, or source-change failure.
+pub fn prepare_transfer(
+    path: impl AsRef<Path>,
+    origin: DeviceId,
+) -> Result<PreparedTransfer, TransferError> {
+    let path = path.as_ref();
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(TransferError::SymbolicLink);
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(TransferError::UnsupportedSource)?
+        .to_owned();
+    validate_single_component(&name)?;
+    let (source_root, mut entries) = if metadata.is_file() {
+        let source_root = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let entry = prepare_entry(path, &name)?;
+        (source_root, vec![entry])
+    } else if metadata.is_dir() {
+        let mut entries = Vec::new();
+        collect_entries(path, path, &mut entries)?;
+        (path.to_path_buf(), entries)
+    } else {
+        return Err(TransferError::UnsupportedSource);
+    };
+    if entries.is_empty() {
+        return Err(TransferError::EmptySource);
+    }
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let manifest = TransferManifest {
+        id: uuid::Uuid::new_v4(),
+        origin,
+        name,
+        entries,
+    };
+    manifest.validate()?;
+    Ok(PreparedTransfer {
+        source_root,
+        manifest,
+    })
+}
 
 /// File-transfer validation, I/O, and integrity failures.
 #[derive(Debug, Error)]
@@ -47,6 +122,21 @@ pub enum TransferError {
     /// Aggregate manifest size cannot be represented safely.
     #[error("file transfer size overflows supported limits")]
     SizeOverflow,
+    /// Source is a symbolic link, which is never followed during sharing.
+    #[error("symbolic links cannot be shared")]
+    SymbolicLink,
+    /// Source is not a regular file/directory or contains non-UTF-8 path material.
+    #[error("file transfer source is unsupported")]
+    UnsupportedSource,
+    /// Directory has no regular files to transfer.
+    #[error("file transfer source is empty")]
+    EmptySource,
+    /// Directory exceeds the bounded manifest entry limit.
+    #[error("file transfer contains too many entries")]
+    TooManyEntries,
+    /// Source changed while its transfer manifest was being prepared.
+    #[error("file transfer source changed while hashing")]
+    SourceChanged,
 }
 
 struct ReceivingEntry {
@@ -277,9 +367,87 @@ impl TransferReceiver {
         }
         self.entries.clear();
         let destination = available_destination(&self.incoming_root, &self.manifest.name);
-        fs::rename(&self.staging_root, &destination)?;
+        if self.manifest.entries.len() == 1
+            && self.manifest.entries[0].relative_path == self.manifest.name
+        {
+            fs::rename(self.staging_root.join(&self.manifest.name), &destination)?;
+            fs::remove_dir(&self.staging_root)?;
+        } else {
+            fs::rename(&self.staging_root, &destination)?;
+        }
         Ok(destination)
     }
+}
+
+fn collect_entries(
+    source_root: &Path,
+    directory: &Path,
+    entries: &mut Vec<TransferEntry>,
+) -> Result<(), TransferError> {
+    let mut children = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    children.sort_by_key(std::fs::DirEntry::file_name);
+    for child in children {
+        let path = child.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(TransferError::SymbolicLink);
+        }
+        if metadata.is_dir() {
+            collect_entries(source_root, &path, entries)?;
+        } else if metadata.is_file() {
+            if entries.len() >= MAX_TRANSFER_ENTRIES {
+                return Err(TransferError::TooManyEntries);
+            }
+            let relative = path
+                .strip_prefix(source_root)
+                .map_err(|_| TransferError::UnsupportedSource)?;
+            let relative = portable_relative_path(relative)?;
+            entries.push(prepare_entry(&path, &relative)?);
+        } else {
+            return Err(TransferError::UnsupportedSource);
+        }
+    }
+    Ok(())
+}
+
+fn portable_relative_path(path: &Path) -> Result<String, TransferError> {
+    path.components()
+        .map(|component| match component {
+            Component::Normal(value) => value
+                .to_str()
+                .map(str::to_owned)
+                .ok_or(TransferError::UnsupportedSource),
+            _ => Err(TransferError::UnsupportedSource),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|components| components.join("/"))
+}
+
+fn prepare_entry(path: &Path, relative_path: &str) -> Result<TransferEntry, TransferError> {
+    let before = fs::metadata(path)?;
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut size = 0_u64;
+    loop {
+        let length = file.read(&mut buffer)?;
+        if length == 0 {
+            break;
+        }
+        hasher.update(&buffer[..length]);
+        size = size
+            .checked_add(u64::try_from(length).map_err(|_| TransferError::SizeOverflow)?)
+            .ok_or(TransferError::SizeOverflow)?;
+    }
+    let after = fs::metadata(path)?;
+    if before.len() != size || after.len() != size {
+        return Err(TransferError::SourceChanged);
+    }
+    Ok(TransferEntry {
+        relative_path: relative_path.to_owned(),
+        size,
+        hash: ContentHash::from_bytes(*hasher.finalize().as_bytes()),
+    })
 }
 
 impl Drop for TransferReceiver {
@@ -383,6 +551,90 @@ mod tests {
                 hash: ContentHash::digest(bytes),
             }],
         }
+    }
+
+    #[test]
+    fn prepares_files_and_directories_with_portable_deterministic_entries() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let folder = directory.path().join("Shared Folder");
+        fs::create_dir_all(folder.join("z-nested")).expect("nested directory");
+        fs::write(folder.join("b.txt"), b"second").expect("second file");
+        fs::write(folder.join("z-nested/a.txt"), b"first").expect("first file");
+        let origin = Uuid::new_v4();
+        let prepared = prepare_transfer(&folder, origin).expect("prepare directory");
+        assert_eq!(prepared.source_root(), folder);
+        assert_eq!(prepared.manifest().origin, origin);
+        assert_eq!(prepared.manifest().name, "Shared Folder");
+        assert_eq!(
+            prepared
+                .manifest()
+                .entries
+                .iter()
+                .map(|entry| entry.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["b.txt", "z-nested/a.txt"]
+        );
+        assert_eq!(
+            prepared.manifest().entries[0].hash,
+            ContentHash::digest(b"second")
+        );
+
+        let file = folder.join("b.txt");
+        let prepared_file = prepare_transfer(&file, origin).expect("prepare file");
+        assert_eq!(prepared_file.source_root(), folder);
+        assert_eq!(prepared_file.manifest().name, "b.txt");
+        assert_eq!(prepared_file.manifest().entries[0].relative_path, "b.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_rejects_symbolic_links_and_empty_directories() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let empty = directory.path().join("empty");
+        fs::create_dir(&empty).expect("empty directory");
+        assert!(matches!(
+            prepare_transfer(&empty, Uuid::new_v4()),
+            Err(TransferError::EmptySource)
+        ));
+        let file = directory.path().join("source.txt");
+        fs::write(&file, b"private").expect("source");
+        let link = directory.path().join("link.txt");
+        symlink(&file, &link).expect("symlink");
+        assert!(matches!(
+            prepare_transfer(link, Uuid::new_v4()),
+            Err(TransferError::SymbolicLink)
+        ));
+    }
+
+    #[test]
+    fn single_file_transfer_publishes_a_file_without_wrapper_directory() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let bytes = b"one nearby file";
+        let manifest = TransferManifest {
+            id: Uuid::new_v4(),
+            origin: Uuid::new_v4(),
+            name: "hello.txt".into(),
+            entries: vec![TransferEntry {
+                relative_path: "hello.txt".into(),
+                size: bytes.len() as u64,
+                hash: ContentHash::digest(bytes),
+            }],
+        };
+        let mut receiver =
+            TransferReceiver::begin(directory.path(), manifest.clone()).expect("begin");
+        receiver
+            .accept(&TransferChunk {
+                transfer_id: manifest.id,
+                entry_index: 0,
+                offset: 0,
+                bytes: bytes.to_vec(),
+            })
+            .expect("file chunk");
+        let destination = receiver.finish().expect("publish file");
+        assert!(destination.is_file());
+        assert_eq!(fs::read(destination).expect("read file"), bytes);
     }
 
     #[test]

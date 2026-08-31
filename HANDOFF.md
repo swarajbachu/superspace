@@ -49,7 +49,7 @@ the feature contract currently marks only the two fully verified calculator line
 
 ## Implemented and verified foundation
 
-- MIT Rust workspace with strict Clippy/pedantic gates and 44 focused commits at handoff creation.
+- MIT Rust workspace with strict Clippy/pedantic gates and a focused, incremental commit history.
 - GPUI floating palette with keyboard and pointer navigation, previews, action menus, three themes,
   centralized motion, native app launch, and indexed file results.
 - Deterministic fuzzy ranking plus persistent aliases, favorites, and invocation frequency.
@@ -62,8 +62,10 @@ the feature contract currently marks only the two fully verified calculator line
   ordering, acknowledgement, offline ledger behavior, content-addressed blobs, resume, and integrity
   verification.
 - Transfer protocol with safe relative paths, staging, disk preflight, collision handling, BLAKE3
-  verification, resume, progress, and cooperative cancellation. Transfer offers are routed through
-  the shared authenticated stream dispatcher; outbound UI/CLI manifest construction is unfinished.
+  verification, resume, progress, and cooperative cancellation. Deterministic outbound manifests
+  recursively hash regular files while rejecting symlinks, empty folders, and non-portable paths.
+  One-shot `file-listen`/`file-send` commands route files and folders through paired, certificate-
+  pinned sessions and publish single files without an unnecessary wrapper directory.
 - Full calculator engine for arithmetic, scientific functions, bases, percentages, ratios, lists,
   units, dates, workdays, timespans, time zones, fiat, and crypto conversion.
 - Persistent quicklinks, Markdown snippets, keyword expansion, notes, explicit custom commands, and
@@ -82,7 +84,12 @@ The exact pairing and clipboard commands are in [`README.md`](README.md). In sho
 2. Run `pair-listen` on one and `pair-connect` on the other.
 3. Confirm the identical six-digit code on both devices.
 4. Obtain peer IDs with `superspace nearby trusted`.
-5. Run `clipboard-listen` and `clipboard-connect` using the paired IDs.
+5. Run `clipboard-listen` and `clipboard-connect` using the paired IDs, or use `file-listen` on the
+   destination followed by `file-send` on the source. Exact commands are in the README.
+
+The file workflow was integration-tested on 2026-08-31 between two isolated paired data roots over
+loopback: a nested two-file folder transferred, acknowledged, and matched the source contents. A
+physical Mac/Linux LAN run is still required.
 
 This is deliberately a manual diagnostic workflow. Production behavior must start discovery and sync
 inside the desktop application, reconnect automatically, restore pending events after process
@@ -90,24 +97,22 @@ restart, and expose status/errors in GPUI.
 
 ## Best next implementation sequence
 
-1. Finish outbound transfer preparation: deterministic recursive manifests, streaming BLAKE3 hashes,
-   symlink rejection, single-file publishing, and a `nearby send` action/CLI.
-2. Complete shared stream dispatch for transfer offers and associate file clipboard events with
+1. Associate file clipboard events with
    verified transfer destinations before applying native file-list clipboard semantics.
-3. Replace manual listener/connector roles with one mDNS-driven service. Resolve trusted device IDs,
+2. Replace manual listener/connector roles with one mDNS-driven service. Resolve trusted device IDs,
    deduplicate simultaneous connections deterministically, reconnect with bounded backoff, touch
    `last_seen_at`, and preserve the offline queue across process restarts.
-4. Move the long-running nearby and clipboard services into the desktop composition root. GPUI must
+3. Move the long-running nearby and clipboard services into the desktop composition root. GPUI must
    receive immutable status/progress events; it must not perform blocking SQLite/network work.
-5. Build clipboard-history and Nearby GPUI surfaces, including drag/drop, device picker, progress,
+4. Build clipboard-history and Nearby GPUI surfaces, including drag/drop, device picker, progress,
    cancellation, retry, trust management, privacy controls, and transfer notifications.
-6. Complete launcher lifecycle: configurable global/per-command/per-app shortcuts, tray/menu-bar,
+5. Complete launcher lifecycle: configurable global/per-command/per-app shortcuts, tray/menu-bar,
    hide/show behavior, launch at login, onboarding, permissions diagnostics, and updater.
-7. Complete built-in platform actions and productivity UI, then backup/restore and Raycast import.
-8. Finish extension host capabilities and in-app registry/browser.
-9. Add CI, dependency/license/security audits, threat model, release signing, macOS universal app/DMG
+6. Complete built-in platform actions and productivity UI, then backup/restore and Raycast import.
+7. Finish extension host capabilities and in-app registry/browser.
+8. Add CI, dependency/license/security audits, threat model, release signing, macOS universal app/DMG
    and Homebrew cask, plus AppImage/deb/rpm/Arch packaging.
-10. Run physical-device macOS/Linux pairing, clipboard, image, sleep/reconnect, Wi-Fi change, large
+9. Run physical-device macOS/Linux pairing, clipboard, image, sleep/reconnect, Wi-Fi change, large
     file, cancellation, resume, disk-full, and revocation suites. Only then update broad checklist
     lines in `docs/features.md`.
 
@@ -117,8 +122,8 @@ AI remains intentionally outside this sequence until the user re-enables it.
 
 - There is no automatic daemon/tray lifecycle yet; nearby clipboard sessions are foreground CLI
   processes with manually supplied addresses.
-- File/folder receiving is routed, but no production outbound manifest builder or GPUI send flow is
-  present at this handoff.
+- File/folder transfer is currently a one-shot foreground CLI workflow. There is no GPUI send flow,
+  native file-list clipboard application, background queue, or automatic retry yet.
 - Clipboard replication queues are memory-resident; history/trust are durable, but queued per-peer
   acknowledgements must be persisted for real restart reconciliation.
 - Native clipboard support currently reads/writes text and images through `arboard`; rich native

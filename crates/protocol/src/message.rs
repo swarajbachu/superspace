@@ -27,6 +27,12 @@ impl ContentHash {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// Construct from an already-computed BLAKE3 digest.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Access the digest bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {

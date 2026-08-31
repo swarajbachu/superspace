@@ -69,9 +69,25 @@ cargo run -p superspace -- nearby clipboard-connect 192.168.1.20:43871 <FIRST_PE
 
 Text and images now synchronize in both directions with history persistence, loop suppression,
 conflict ordering, resumable large-blob transfer, and acknowledgement after durable application.
-Use `nearby revoke`, `nearby enable`, or `nearby forget` to manage trust. Automatic discovery and
-file-transfer dispatch are still under active development; the feature checklist deliberately
-leaves those broader product requirements unchecked until they are integrated and verified.
+Use `nearby revoke`, `nearby enable`, or `nearby forget` to manage trust.
+
+To send a file or recursively send a non-empty folder, start a one-shot receiver on the destination:
+
+```sh
+cargo run -p superspace -- nearby file-listen 0.0.0.0:43872 <SENDER_PEER_ID> "My Linux PC"
+```
+
+Then send from the other machine using the receiver's address and peer ID:
+
+```sh
+cargo run -p superspace -- nearby file-send 192.168.1.20:43872 <RECEIVER_PEER_ID> \
+  "/path/to/file-or-folder" "My Mac"
+```
+
+Incoming content is integrity-checked and published under the Superspace data directory's
+`incoming/` folder without overwriting an existing destination. Automatic discovery and desktop
+file-sharing UI are still under active development; the feature checklist deliberately leaves the
+broader product requirements unchecked until they are integrated and physically verified.
 
 On Ubuntu, the GPUI desktop build requires:
 
