@@ -143,6 +143,32 @@ impl PaletteModel {
         }
     }
 
+    /// Select a visible row on the active surface.
+    ///
+    /// Returns `false` when `index` is outside the current result or action list.
+    pub fn select(&mut self, index: usize) -> bool {
+        let length = match self.mode {
+            PaletteMode::Results => self.matches.len(),
+            PaletteMode::Actions => self.actions().len(),
+        };
+        if index >= length {
+            return false;
+        }
+        match self.mode {
+            PaletteMode::Results => self.selected = index,
+            PaletteMode::Actions => self.selected_action = index,
+        }
+        true
+    }
+
+    /// Select and invoke a visible row, as used by pointer input.
+    pub fn invoke(&mut self, index: usize) -> PaletteEvent {
+        if !self.select(index) {
+            return PaletteEvent::None;
+        }
+        self.invoke_selected()
+    }
+
     /// Replace all candidates while preserving the query and selection when possible.
     pub fn replace_entries(&mut self, entries: Vec<PaletteEntry>) {
         let selected_id = self.selected_entry().map(|entry| entry.id.clone());
@@ -336,5 +362,24 @@ mod tests {
         assert_eq!(model.key(PaletteKey::Escape), PaletteEvent::None);
         assert!(model.query().is_empty());
         assert_eq!(model.key(PaletteKey::Escape), PaletteEvent::Dismiss);
+    }
+
+    #[test]
+    fn pointer_selection_obeys_active_surface_bounds() {
+        let mut model = PaletteModel::new(entries());
+        assert!(model.select(0));
+        assert_eq!(model.selected_entry().unwrap().id, "apps");
+        assert!(!model.select(99));
+
+        assert_eq!(model.key(PaletteKey::OpenActions), PaletteEvent::None);
+        assert_eq!(model.mode(), PaletteMode::Actions);
+        assert_eq!(
+            model.invoke(0),
+            PaletteEvent::Invoke {
+                entry_id: "apps".into(),
+                action_id: "open".into(),
+            }
+        );
+        assert_eq!(model.invoke(2), PaletteEvent::None);
     }
 }

@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Render, Styled as _, Window, div, px,
+    KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Window,
+    div, px,
 };
 use superspace_core::builtin_features;
 use superspace_platform::AppDescriptor;
@@ -22,6 +23,7 @@ pub struct Palette {
     base_entries: Vec<PaletteEntry>,
     file_index: Option<superspace_files::FileIndex>,
     files: HashMap<String, PathBuf>,
+    theme_kind: theme::ThemeKind,
 }
 
 impl Palette {
@@ -83,11 +85,33 @@ impl Palette {
             base_entries,
             file_index: open_file_index(),
             files: HashMap::new(),
+            theme_kind: theme::ThemeKind::default(),
+        }
+    }
+
+    fn handle_event(&mut self, event: PaletteEvent, window: &mut Window) {
+        match event {
+            PaletteEvent::None => {}
+            PaletteEvent::Invoke {
+                entry_id,
+                action_id,
+            } => self.invoke(&entry_id, &action_id),
+            PaletteEvent::Dismiss => window.remove_window(),
         }
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        if keystroke.key == "t"
+            && keystroke.modifiers.shift
+            && (keystroke.modifiers.platform || keystroke.modifiers.control)
+        {
+            self.theme_kind = self.theme_kind.next();
+            self.status = format!("Theme: {}", self.theme_kind.name());
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let key = match keystroke.key.as_str() {
             "up" => Some(PaletteKey::Up),
             "down" => Some(PaletteKey::Down),
@@ -106,14 +130,8 @@ impl Palette {
             return;
         };
         let query_changed = matches!(&key, PaletteKey::Text(_) | PaletteKey::Backspace);
-        match self.model.key(key) {
-            PaletteEvent::None => {}
-            PaletteEvent::Invoke {
-                entry_id,
-                action_id,
-            } => self.invoke(&entry_id, &action_id),
-            PaletteEvent::Dismiss => window.remove_window(),
-        }
+        let palette_event = self.model.key(key);
+        self.handle_event(palette_event, window);
         if query_changed {
             self.refresh_file_results();
         }
@@ -200,7 +218,7 @@ impl Render for Palette {
         reason = "declarative palette layout is clearest as one tree"
     )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = theme::get(cx);
+        let theme = theme::for_kind(self.theme_kind);
         let matches = self.model.results().cloned().collect::<Vec<_>>();
         let selected = self.model.selected_entry().cloned();
         let selected_title = selected
@@ -289,6 +307,12 @@ impl Render for Palette {
                                     .justify_between()
                                     .rounded(px(9.0))
                                     .when(selected, |row| row.bg(theme.selected))
+                                    .hover(|row| row.bg(theme.selected))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let palette_event = this.model.invoke(index);
+                                        this.handle_event(palette_event, window);
+                                        cx.notify();
+                                    }))
                                     .child(div().text_size(px(14.0)).child(entry.0.clone()))
                                     .child(
                                         div()
@@ -335,7 +359,7 @@ impl Render for Palette {
                     .text_size(px(11.0))
                     .text_color(theme.muted)
                     .child(self.status.clone())
-                    .child("Open ↵    Actions ⌘K"),
+                    .child("Open ↵    Actions ⌘K    Theme ⇧⌘T"),
             )
             .with_animation(
                 "palette-enter",
