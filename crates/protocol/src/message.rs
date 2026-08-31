@@ -162,6 +162,20 @@ pub struct TransferManifest {
     pub entries: Vec<TransferEntry>,
 }
 
+/// One bounded, ordered piece of a transferred file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferChunk {
+    /// Owning transfer.
+    pub transfer_id: TransferId,
+    /// Index into [`TransferManifest::entries`].
+    pub entry_index: u32,
+    /// Byte offset where this chunk starts.
+    pub offset: u64,
+    /// Raw file bytes.
+    pub bytes: Vec<u8>,
+}
+
 impl TransferManifest {
     /// Validate all untrusted manifest fields before touching the filesystem.
     ///
@@ -192,6 +206,15 @@ pub enum Message {
     Clipboard(ClipboardEvent),
     /// Announces a file transfer.
     TransferOffer(TransferManifest),
+    /// Streams one file segment after an accepted offer.
+    TransferChunk(TransferChunk),
+    /// Requests continuation from receiver-persisted byte offsets.
+    TransferResume {
+        /// Transfer being resumed.
+        id: TransferId,
+        /// One byte offset per manifest entry.
+        offsets: Vec<u64>,
+    },
     /// Acknowledges durable receipt of an event or transfer.
     Acknowledge {
         /// Event or transfer identifier.
