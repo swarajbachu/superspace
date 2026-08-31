@@ -33,10 +33,65 @@ fn main() -> Result<()> {
         }
         Some("launcher") => launcher(arguments)?,
         Some("clipboard") => clipboard(arguments)?,
+        Some("nearby") => nearby(arguments)?,
         Some("productivity") => productivity(arguments)?,
         Some("files") => files(arguments)?,
         Some("--version" | "-V") => println!("superspace {}", env!("CARGO_PKG_VERSION")),
         Some(command) => bail!("unknown command: {command}"),
+    }
+    Ok(())
+}
+
+fn nearby(mut arguments: impl Iterator<Item = String>) -> Result<()> {
+    let action = arguments.next().unwrap_or_else(|| "trusted".into());
+    let root = data_root();
+    std::fs::create_dir_all(&root)?;
+    match action.as_str() {
+        "identity" => {
+            no_more(arguments)?;
+            let identity = superspace_network::LocalIdentity::load_or_create(
+                root.join("local-identity.cbor"),
+            )?;
+            println!("device={}", identity.device_id);
+            println!("certificate={}", identity.transport.fingerprint());
+        }
+        "trusted" => {
+            no_more(arguments)?;
+            for device in
+                superspace_storage::TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))?
+                    .list()?
+            {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    device.id,
+                    if device.enabled { "enabled" } else { "revoked" },
+                    device
+                        .last_seen_at
+                        .map_or_else(|| "never".into(), |value| value.to_string()),
+                    device.name
+                );
+            }
+        }
+        "enable" | "revoke" => {
+            let id = required(&mut arguments, "device id")?.parse::<Uuid>()?;
+            no_more(arguments)?;
+            let enabled = action == "enable";
+            if !superspace_storage::TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))?
+                .set_enabled(id, enabled)?
+            {
+                bail!("trusted device not found: {id}");
+            }
+        }
+        "forget" => {
+            let id = required(&mut arguments, "device id")?.parse::<Uuid>()?;
+            no_more(arguments)?;
+            if !superspace_storage::TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))?
+                .remove(id)?
+            {
+                bail!("trusted device not found: {id}");
+            }
+        }
+        _ => bail!("usage: superspace nearby <identity|trusted|enable|revoke|forget> [device-id]"),
     }
     Ok(())
 }
@@ -112,12 +167,13 @@ fn watch_clipboard(
         Some(_) => bail!("usage: superspace clipboard watch [--once]"),
     };
     no_more(arguments)?;
-    let device_id = installation_id(root)?;
+    let identity =
+        superspace_network::LocalIdentity::load_or_create(root.join("local-identity.cbor"))?;
     let backend = superspace_platform::NativeClipboard::connect()?;
     let history = ClipboardStore::open(history_path)?;
     let blobs = BlobStore::open(root.join("clipboard-blobs"))?;
     let mut sync =
-        superspace_sync::ClipboardSync::new(device_id, now_u64(), backend, history, blobs);
+        superspace_sync::ClipboardSync::new(identity.device_id, now_u64(), backend, history, blobs);
     loop {
         let now = now_u64();
         if let Some(event) = sync.poll_local(now, [], i64::MAX)? {
@@ -128,18 +184,6 @@ fn watch_clipboard(
         }
         thread::sleep(Duration::from_millis(250));
     }
-}
-
-fn installation_id(root: &Path) -> Result<Uuid> {
-    let path = root.join("device-id");
-    match std::fs::read_to_string(&path) {
-        Ok(value) => return Ok(value.trim().parse()?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let id = Uuid::new_v4();
-    std::fs::write(path, id.to_string())?;
-    Ok(id)
 }
 
 fn launcher(mut arguments: impl Iterator<Item = String>) -> Result<()> {

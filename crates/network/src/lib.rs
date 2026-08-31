@@ -3,6 +3,7 @@
 mod blob;
 mod discovery;
 mod frame;
+mod identity;
 mod pairing;
 mod replication;
 mod session;
@@ -12,6 +13,7 @@ mod transport;
 pub use blob::{BlobReceiver, BlobTransferError, read_blob_chunk};
 pub use discovery::{DiscoveryError, DiscoveryEvent, NearbyDevice, NearbyDiscovery, SERVICE_TYPE};
 pub use frame::{FrameError, MAX_FRAME_SIZE, decode_frame, encode_frame, read_frame, write_frame};
+pub use identity::{IdentityStoreError, LocalIdentity};
 pub use pairing::{
     DeviceKeypair, InitiatorFinish, PairingCode, PairingError, PairingInitiator, PairingResponder,
     ResponderFinish, ResponderReply, SecureChannel,

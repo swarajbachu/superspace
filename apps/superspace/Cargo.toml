@@ -15,6 +15,7 @@ anyhow.workspace = true
 serde_json.workspace = true
 superspace-core = { path = "../../crates/core" }
 superspace-files = { path = "../../crates/files" }
+superspace-network = { path = "../../crates/network" }
 superspace-platform = { path = "../../crates/platform" }
 superspace-productivity = { path = "../../crates/productivity" }
 superspace-storage = { path = "../../crates/storage" }
