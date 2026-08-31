@@ -1,5 +1,5 @@
 [package]
-name = "superspace"
+name = "superspace-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,12 +8,12 @@ rust-version.workspace = true
 
 [features]
 default = []
-desktop = ["superspace-ui/desktop"]
+desktop = ["dep:gpui", "dep:gpui_platform"]
 
 [dependencies]
-anyhow.workspace = true
-superspace-core = { path = "../../crates/core" }
-superspace-ui = { path = "../../crates/ui" }
+gpui = { workspace = true, optional = true }
+gpui_platform = { workspace = true, optional = true }
+superspace-core = { path = "../core" }
 
 [lints]
 workspace = true

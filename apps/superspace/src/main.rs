@@ -6,7 +6,8 @@ use superspace_core::builtin_features;
 fn main() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
-        None | Some("features") => print_features(),
+        None => superspace_ui::run(),
+        Some("features") => print_features(),
         Some("--version" | "-V") => println!("superspace {}", env!("CARGO_PKG_VERSION")),
         Some(command) => bail!("unknown command: {command}"),
     }

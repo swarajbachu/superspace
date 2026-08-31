@@ -23,6 +23,15 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo run -p superspace -- features
+cargo run -p superspace --features desktop
+```
+
+On Ubuntu, the GPUI desktop build requires:
+
+```sh
+sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+  libx11-dev libxcb1-dev libx11-xcb-dev libfontconfig1-dev libfreetype-dev \
+  libasound2-dev libvulkan-dev pkg-config cmake
 ```
 
 ## Inspiration

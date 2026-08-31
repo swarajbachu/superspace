@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/protocol",
     "crates/storage",
+    "crates/ui",
 ]
 
 [workspace.package]
@@ -23,6 +24,8 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 tempfile = "3.22"
+gpui = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a" }
+gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a", features = ["wayland", "x11", "font-kit", "runtime_shaders"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
