@@ -7,6 +7,7 @@ members = [
     "crates/core",
     "crates/extensions",
     "crates/network",
+    "crates/platform",
     "crates/protocol",
     "crates/storage",
     "crates/ui",
@@ -21,6 +22,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0"
+arboard = { version = "3.6", features = ["wayland-data-control"] }
 blake3 = "1.8"
 fs2 = "0.4"
 mdns-sd = { version = "0.21", default-features = false }
