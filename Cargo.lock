@@ -6242,6 +6242,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "superspace-extension"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "superspace-extensions",
+]
+
+[[package]]
 name = "superspace-extensions"
 version = "0.1.0"
 dependencies = [
@@ -6249,6 +6257,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "wasmparser 0.239.0",
  "wasmtime",
