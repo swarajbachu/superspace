@@ -585,12 +585,12 @@ impl Render for SearchInput {
             .size_full()
             .flex()
             .items_center()
-            .line_height(px(24.0))
-            .text_size(px(17.0))
+            .line_height(px(28.0))
+            .text_size(px(20.0))
             .child(
                 div()
                     .w_full()
-                    .h(px(24.0))
+                    .h(px(28.0))
                     .child(SearchTextElement { input: cx.entity() }),
             )
     }

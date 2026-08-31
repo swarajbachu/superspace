@@ -43,8 +43,6 @@ pub struct Theme {
     pub surface: Hsla,
     /// Hovered/selected surface.
     pub selected: Hsla,
-    /// Hairline around the selected result.
-    pub selected_border: Hsla,
     /// Pointer hover without keyboard selection.
     pub hovered: Hsla,
     /// Primary text.
@@ -75,24 +73,22 @@ pub fn install(cx: &mut App) {
 pub fn for_kind(kind: ThemeKind) -> Theme {
     match kind {
         ThemeKind::Graphite => Theme {
-            background: hsla(0.64, 0.08, 0.055, 0.44),
-            surface: hsla(0.0, 0.0, 1.0, 0.028),
-            selected: hsla(0.0, 0.0, 1.0, 0.12),
-            selected_border: hsla(0.0, 0.0, 1.0, 0.16),
-            hovered: hsla(0.0, 0.0, 1.0, 0.07),
+            background: hsla(0.64, 0.08, 0.055, 0.40),
+            surface: hsla(0.0, 0.0, 1.0, 0.05),
+            selected: hsla(0.0, 0.0, 1.0, 0.10),
+            hovered: hsla(0.0, 0.0, 1.0, 0.05),
             text: hsla(0.0, 0.0, 0.94, 1.0),
             muted: hsla(0.64, 0.02, 0.64, 1.0),
-            border: hsla(0.0, 0.0, 1.0, 0.14),
+            border: hsla(0.0, 0.0, 1.0, 0.10),
             accent: hsla(0.59, 0.76, 0.67, 1.0),
-            tile: hsla(0.0, 0.0, 1.0, 0.085),
-            highlight: hsla(0.0, 0.0, 1.0, 0.25),
+            tile: hsla(0.0, 0.0, 1.0, 0.06),
+            highlight: hsla(0.0, 0.0, 1.0, 0.20),
             shadow: hsla(0.0, 0.0, 0.0, 0.58),
         },
         ThemeKind::Midnight => Theme {
             background: hsla(0.0, 0.0, 0.018, 0.82),
             surface: hsla(0.0, 0.0, 1.0, 0.028),
             selected: hsla(0.0, 0.0, 1.0, 0.09),
-            selected_border: hsla(0.0, 0.0, 1.0, 0.11),
             hovered: hsla(0.0, 0.0, 1.0, 0.05),
             text: hsla(0.0, 0.0, 0.96, 1.0),
             muted: hsla(0.0, 0.0, 0.62, 1.0),
@@ -106,7 +102,6 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             background: hsla(0.10, 0.10, 0.94, 0.74),
             surface: hsla(0.0, 0.0, 1.0, 0.22),
             selected: hsla(0.0, 0.0, 1.0, 0.40),
-            selected_border: hsla(0.0, 0.0, 1.0, 0.58),
             hovered: hsla(0.0, 0.0, 1.0, 0.26),
             text: hsla(0.66, 0.12, 0.14, 1.0),
             muted: hsla(0.66, 0.06, 0.42, 1.0),
