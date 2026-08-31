@@ -72,6 +72,27 @@ pub enum AppDiscoveryError {
     Io(#[from] std::io::Error),
 }
 
+/// Open a file or directory with the operating system's registered default application.
+///
+/// No shell is involved, so path contents cannot be interpreted as commands.
+///
+/// # Errors
+/// Returns an I/O failure if the platform opener cannot be started.
+pub fn open_path(path: impl AsRef<Path>) -> Result<u32, AppDiscoveryError> {
+    let path = path.as_ref();
+    #[cfg(target_os = "linux")]
+    let child = Command::new("xdg-open").arg(path).spawn()?;
+    #[cfg(target_os = "macos")]
+    let child = Command::new("open").arg(path).spawn()?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err(AppDiscoveryError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "path opening is supported only on Linux and macOS",
+    )));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Ok(child.id())
+}
+
 /// Standard application roots for the current operating system.
 #[must_use]
 pub fn default_app_roots() -> Vec<PathBuf> {

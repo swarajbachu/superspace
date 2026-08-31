@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -18,6 +19,9 @@ pub struct Palette {
     focus: FocusHandle,
     status: String,
     applications: HashMap<String, AppDescriptor>,
+    base_entries: Vec<PaletteEntry>,
+    file_index: Option<superspace_files::FileIndex>,
+    files: HashMap<String, PathBuf>,
 }
 
 impl Palette {
@@ -70,11 +74,15 @@ impl Palette {
             }],
         }));
         let status = format!("{} applications indexed", applications.len());
+        let base_entries = entries.clone();
         Self {
             model: PaletteModel::new(entries),
             focus,
             status,
             applications,
+            base_entries,
+            file_index: open_file_index(),
+            files: HashMap::new(),
         }
     }
 
@@ -97,6 +105,7 @@ impl Palette {
         let Some(key) = key else {
             return;
         };
+        let query_changed = matches!(&key, PaletteKey::Text(_) | PaletteKey::Backspace);
         match self.model.key(key) {
             PaletteEvent::None => {}
             PaletteEvent::Invoke {
@@ -104,6 +113,9 @@ impl Palette {
                 action_id,
             } => self.invoke(&entry_id, &action_id),
             PaletteEvent::Dismiss => window.remove_window(),
+        }
+        if query_changed {
+            self.refresh_file_results();
         }
         cx.stop_propagation();
         cx.notify();
@@ -118,9 +130,61 @@ impl Palette {
                     Err(error) => format!("Could not launch {}: {error}", application.name),
                 },
             );
+        } else if action_id == "open-file" {
+            self.status = self.files.get(entry_id).map_or_else(
+                || format!("File disappeared: {entry_id}"),
+                |path| match superspace_platform::open_path(path) {
+                    Ok(process_id) => format!("Opened {} ({process_id})", path.display()),
+                    Err(error) => format!("Could not open {}: {error}", path.display()),
+                },
+            );
+        } else if action_id == "nearby-share" {
+            self.status = self.files.get(entry_id).map_or_else(
+                || format!("File disappeared: {entry_id}"),
+                |path| format!("Ready to share {} with a nearby device", path.display()),
+            );
         } else {
             self.status = format!("Requested {action_id} for {entry_id}");
         }
+    }
+
+    fn refresh_file_results(&mut self) {
+        self.files.clear();
+        let query = self.model.query().trim();
+        let matches = if query.chars().count() >= 2 {
+            self.file_index
+                .as_ref()
+                .and_then(|index| index.search(query, None, 30).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut entries = self.base_entries.clone();
+        entries.extend(matches.into_iter().map(|matched| {
+            let id = format!("file:{}", matched.path.display());
+            self.files.insert(id.clone(), matched.path.clone());
+            PaletteEntry {
+                id,
+                title: matched.name,
+                keywords: Vec::new(),
+                preview: format!("{} bytes · {}", matched.size, matched.path.display()),
+                frequency: 0,
+                favorite: false,
+                actions: vec![
+                    ActionItem {
+                        id: "open-file".into(),
+                        title: "Open File".into(),
+                        shortcut: Some("↵".into()),
+                    },
+                    ActionItem {
+                        id: "nearby-share".into(),
+                        title: "Share with Nearby Device".into(),
+                        shortcut: None,
+                    },
+                ],
+            }
+        }));
+        self.model.replace_entries(entries);
     }
 }
 
@@ -298,5 +362,30 @@ fn preview(id: &str) -> &'static str {
             "Run capability-scoped WebAssembly extensions without ambient authority."
         }
         _ => "Open this Superspace command or press ⌘K / Ctrl+K for more actions.",
+    }
+}
+
+fn open_file_index() -> Option<superspace_files::FileIndex> {
+    let root =
+        std::env::var_os("SUPERSPACE_DATA_DIR").map_or_else(default_data_root, PathBuf::from);
+    superspace_files::FileIndex::open(root.join("files.sqlite")).ok()
+}
+
+fn default_data_root() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map_or_else(
+            || PathBuf::from("Superspace"),
+            |home| Path::new(&home).join("Library/Application Support/Superspace"),
+        )
+    } else {
+        std::env::var_os("XDG_DATA_HOME").map_or_else(
+            || {
+                std::env::var_os("HOME").map_or_else(
+                    || PathBuf::from(".local/share/superspace"),
+                    |home| Path::new(&home).join(".local/share/superspace"),
+                )
+            },
+            |root| Path::new(&root).join("superspace"),
+        )
     }
 }
