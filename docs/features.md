@@ -22,8 +22,8 @@ documented platform verification; being represented by a type alone is not compl
 
 ## Built-in productivity
 
-- [ ] Calculator: arithmetic, scientific functions, bases, percentages, ratios, and lists.
-- [ ] Units, typed quantities, dates, workdays, timespans, time zones, fiat, and crypto conversion.
+- [x] Calculator: arithmetic, scientific functions, bases, percentages, ratios, and lists.
+- [x] Units, typed quantities, dates, workdays, timespans, time zones, fiat, and crypto conversion.
 - [ ] Quicklinks, Markdown snippets, keyword expansion, custom shell commands, notes, and emoji.
 - [ ] Window/workspace management, system actions, calendar meetings, and app uninstall/cleanup.
 - [ ] Versioned backup/restore and compatible Raycast data import.

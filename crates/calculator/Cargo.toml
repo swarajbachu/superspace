@@ -7,6 +7,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono.workspace = true
+chrono-tz.workspace = true
+rust_decimal.workspace = true
 thiserror.workspace = true
 
 [lints]
