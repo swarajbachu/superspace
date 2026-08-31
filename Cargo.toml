@@ -10,6 +10,7 @@ members = [
     "crates/network",
     "crates/platform",
     "crates/protocol",
+    "crates/productivity",
     "crates/storage",
     "crates/sync",
     "crates/ui",
