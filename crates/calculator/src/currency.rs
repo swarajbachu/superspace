@@ -32,6 +32,34 @@ impl AssetCode {
     }
 }
 
+/// A parsed inline conversion such as `100 USD to EUR`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrencyQuery {
+    /// Decimal amount to convert.
+    pub amount: Decimal,
+    /// Source asset.
+    pub from: AssetCode,
+    /// Destination asset.
+    pub to: AssetCode,
+}
+
+impl CurrencyQuery {
+    /// Parse `<amount> <asset> to|in <asset>` without guessing bare arithmetic.
+    #[must_use]
+    pub fn parse(input: &str) -> Option<Self> {
+        let fields = input.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 4 || !matches!(fields[2].to_ascii_lowercase().as_str(), "to" | "in") {
+            return None;
+        }
+        let amount = Decimal::from_str(&fields[0].replace(',', "")).ok()?;
+        Some(Self {
+            amount,
+            from: AssetCode::parse(fields[1]).ok()?,
+            to: AssetCode::parse(fields[3]).ok()?,
+        })
+    }
+}
+
 impl fmt::Display for AssetCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -175,5 +203,15 @@ mod tests {
                 .convert(Decimal::ONE, &usd, &AssetCode::parse("JPY").expect("JPY"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn parses_currency_queries_without_claiming_other_input() {
+        let query = CurrencyQuery::parse("1,250.50 usd to EUR").expect("currency query");
+        assert_eq!(query.amount, Decimal::new(125_050, 2));
+        assert_eq!(query.from.as_str(), "USD");
+        assert_eq!(query.to.as_str(), "EUR");
+        assert_eq!(CurrencyQuery::parse("2 + 2"), None);
+        assert_eq!(CurrencyQuery::parse("USD to EUR"), None);
     }
 }

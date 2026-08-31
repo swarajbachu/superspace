@@ -551,9 +551,9 @@ fn encode_paths(value: &ClipboardValue) -> Vec<u8> {
 }
 
 fn decode_paths(bytes: &[u8]) -> Result<ClipboardValue, SyncError> {
+    const WIDTH: usize = size_of::<usize>();
     let mut paths = Vec::new();
     let mut offset = 0;
-    const WIDTH: usize = size_of::<usize>();
     while offset < bytes.len() {
         let length_bytes: [u8; WIDTH] = bytes
             .get(offset..offset + WIDTH)

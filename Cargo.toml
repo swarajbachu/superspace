@@ -52,6 +52,7 @@ snow = "0.10"
 thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 unicode-segmentation = "1.13"
+ureq = { version = "3.1", default-features = false, features = ["json", "rustls"] }
 tempfile = "3.22"
 tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 wasmparser = "0.239"

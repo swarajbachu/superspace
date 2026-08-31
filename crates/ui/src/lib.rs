@@ -2,6 +2,10 @@
 
 #[cfg(feature = "desktop")]
 mod clipboard_history;
+#[cfg(feature = "desktop")]
+mod currency;
+#[cfg(feature = "desktop")]
+mod mini_tools;
 mod model;
 #[cfg(feature = "desktop")]
 pub mod motion;

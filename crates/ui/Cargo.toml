@@ -17,9 +17,16 @@ superspace-core = { path = "../core" }
 superspace-calculator = { path = "../calculator" }
 superspace-files = { path = "../files" }
 superspace-platform = { path = "../platform" }
+superspace-productivity = { path = "../productivity" }
 superspace-storage = { path = "../storage" }
 superspace-sync = { path = "../sync" }
+chrono.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 unicode-segmentation.workspace = true
+ureq.workspace = true
+uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 icns.workspace = true

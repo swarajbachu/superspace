@@ -8,7 +8,7 @@ use gpui::{
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
     StyledImage as _, Window, div, img, point, px,
 };
-use superspace_calculator::{Calculator, ResultValue};
+use superspace_calculator::{Calculator, CurrencyQuery, ResultValue};
 use superspace_core::LauncherPreferences;
 use superspace_platform::AppDescriptor;
 
@@ -16,6 +16,8 @@ use crate::{
     ActionItem, PaletteEntry, PaletteEntryKind, PaletteEvent, PaletteKey, PaletteMode,
     PaletteModel,
     clipboard_history::ClipboardHistory,
+    currency::{self, Conversion},
+    mini_tools::MiniTools,
     motion,
     search_input::{InputChanged, SearchInput},
     theme,
@@ -26,6 +28,9 @@ enum PaletteSurface {
     #[default]
     Launcher,
     Clipboard,
+    Tools,
+    Emoji,
+    Currency,
 }
 
 /// Main command palette state.
@@ -43,6 +48,9 @@ pub struct Palette {
     files: HashMap<String, PathBuf>,
     calculations: HashMap<String, String>,
     clipboard: Option<ClipboardHistory>,
+    mini_tools: Option<MiniTools>,
+    currency_query: Option<CurrencyQuery>,
+    currency_result: Option<Result<Conversion, String>>,
     theme_kind: theme::ThemeKind,
     preferences: LauncherPreferences,
     preferences_path: PathBuf,
@@ -100,13 +108,20 @@ impl Palette {
             "Search, pin, restore, and remove copied items",
             "open-clipboard",
         ));
+        entries.push(builtin_entry(
+            "builtin:tools",
+            "Mini Tools",
+            "Currency, emoji, UUIDs, snippets, links, notes, and commands",
+            "open-tools",
+        ));
         let base_entries = entries.clone();
         let clipboard = ClipboardHistory::open(&data_root()).ok();
+        let mini_tools = MiniTools::open(&data_root()).ok();
 
         cx.subscribe(&search_input, |palette, input, _: &InputChanged, cx| {
             palette.model.set_query(input.read(cx).text().to_owned());
             palette.notice = None;
-            palette.refresh_results();
+            palette.refresh_results(cx);
             palette.results_scroll.scroll_to_item(0);
             cx.notify();
         })
@@ -126,6 +141,9 @@ impl Palette {
             files: HashMap::new(),
             calculations: HashMap::new(),
             clipboard,
+            mini_tools,
+            currency_query: None,
+            currency_result: None,
             theme_kind: theme::ThemeKind::default(),
             preferences,
             preferences_path,
@@ -197,9 +215,22 @@ impl Palette {
     }
 
     /// Returns whether the palette should close after the action.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "central action routing keeps palette side effects explicit"
+    )]
     fn invoke(&mut self, entry_id: &str, action_id: &str, cx: &mut Context<Self>) -> bool {
         if action_id == "open-clipboard" {
             self.enter_surface(PaletteSurface::Clipboard, cx);
+            false
+        } else if action_id == "open-tools" {
+            self.enter_surface(PaletteSurface::Tools, cx);
+            false
+        } else if action_id == "open-emoji" {
+            self.enter_surface(PaletteSurface::Emoji, cx);
+            false
+        } else if action_id == "open-currency" {
+            self.enter_surface(PaletteSurface::Currency, cx);
             false
         } else if action_id == "restore-clipboard" {
             match self
@@ -227,10 +258,10 @@ impl Palette {
                     } else {
                         "Unpinned clipboard item".into()
                     });
-                    self.refresh_results();
+                    self.refresh_results(cx);
                 }
                 Err(error) => {
-                    self.notice = Some(format!("Could not update clipboard item: {error}"))
+                    self.notice = Some(format!("Could not update clipboard item: {error}"));
                 }
             }
             false
@@ -243,10 +274,10 @@ impl Palette {
             {
                 Ok(()) => {
                     self.notice = Some("Removed clipboard item".into());
-                    self.refresh_results();
+                    self.refresh_results(cx);
                 }
                 Err(error) => {
-                    self.notice = Some(format!("Could not remove clipboard item: {error}"))
+                    self.notice = Some(format!("Could not remove clipboard item: {error}"));
                 }
             }
             false
@@ -278,6 +309,65 @@ impl Palette {
                 self.notice = Some(format!("Copied {result}"));
             }
             false
+        } else if action_id == "copy-currency" {
+            if let Some(Ok(result)) = &self.currency_result {
+                let value = result.display_value();
+                cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                self.notice = Some(format!("Copied {value} {}", result.query.to));
+            }
+            false
+        } else if action_id == "copy-emoji" {
+            if let Some(value) = entry_id.strip_prefix("emoji:") {
+                cx.write_to_clipboard(ClipboardItem::new_string(value.to_owned()));
+                self.notice = Some(format!("Copied {value}"));
+            }
+            false
+        } else if action_id == "copy-uuid" {
+            let value = uuid::Uuid::new_v4().to_string();
+            cx.write_to_clipboard(ClipboardItem::new_string(value));
+            self.notice = Some("Copied a new UUID".into());
+            false
+        } else if action_id == "copy-timestamp" {
+            let value = chrono::Utc::now().timestamp().to_string();
+            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+            self.notice = Some(format!("Copied {value}"));
+            false
+        } else if action_id == "copy-tool-item" {
+            if let Some(value) = self
+                .mini_tools
+                .as_ref()
+                .and_then(|tools| tools.text(entry_id))
+            {
+                cx.write_to_clipboard(ClipboardItem::new_string(value));
+                self.notice = Some("Copied to clipboard".into());
+            }
+            false
+        } else if action_id == "open-quicklink" {
+            match self
+                .mini_tools
+                .as_ref()
+                .ok_or_else(|| "mini tools are unavailable".to_owned())
+                .and_then(|tools| tools.open_quicklink(entry_id, ""))
+            {
+                Ok(()) => true,
+                Err(error) => {
+                    self.notice = Some(format!("Could not open quicklink: {error}"));
+                    false
+                }
+            }
+        } else if action_id == "run-tool-command" {
+            match self
+                .mini_tools
+                .as_ref()
+                .ok_or_else(|| "mini tools are unavailable".to_owned())
+                .and_then(|tools| tools.run_command(entry_id, ""))
+            {
+                Ok(()) => true,
+                Err(error) => {
+                    self.notice = Some(format!("Could not run command: {error}"));
+                    false
+                }
+            }
         } else if action_id == "favorite" {
             self.toggle_favorite(entry_id);
             false
@@ -333,7 +423,11 @@ impl Palette {
         }
     }
 
-    fn refresh_results(&mut self) {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "surface result composition is easiest to audit in one dispatch function"
+    )]
+    fn refresh_results(&mut self, cx: &mut Context<Self>) {
         self.files.clear();
         self.calculations.clear();
         if self.surface == PaletteSurface::Clipboard {
@@ -352,26 +446,62 @@ impl Palette {
             }
             return;
         }
-        let query = self.model.query().trim();
+        if self.surface == PaletteSurface::Tools {
+            let query = self.model.query().trim().to_owned();
+            let entries = self
+                .mini_tools
+                .as_mut()
+                .ok_or_else(|| "mini tools are unavailable".to_owned())
+                .and_then(|tools| tools.entries(&query));
+            match entries {
+                Ok(entries) => self.model.replace_entries(entries),
+                Err(error) => {
+                    self.notice = Some(format!("Could not load mini tools: {error}"));
+                    self.model.replace_entries(Vec::new());
+                }
+            }
+            return;
+        }
+        if self.surface == PaletteSurface::Emoji {
+            self.model
+                .replace_entries(MiniTools::emoji_entries(self.model.query()));
+            return;
+        }
+        if self.surface == PaletteSurface::Currency {
+            self.refresh_currency(cx);
+            return;
+        }
+        let query = self.model.query().trim().to_owned();
+        if CurrencyQuery::parse(&query).is_some() {
+            self.refresh_currency(cx);
+            return;
+        }
+        self.currency_query = None;
+        self.currency_result = None;
+        let keyword_entry = self
+            .mini_tools
+            .as_mut()
+            .and_then(|tools| tools.keyword_entry(&query).ok().flatten());
         let matches = if query.chars().count() >= 2 {
             self.file_index
                 .as_ref()
-                .and_then(|index| index.search(query, None, 30).ok())
+                .and_then(|index| index.search(&query, None, 30).ok())
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
         let mut entries = self.base_entries.clone();
-        if let Some(result) = calculate(query) {
+        entries.extend(keyword_entry);
+        if let Some(result) = calculate(&query) {
             let id = format!("calculation:{query}");
             self.calculations.insert(id.clone(), result.clone());
             entries.push(PaletteEntry {
                 id,
                 title: result,
-                subtitle: query.to_owned(),
+                subtitle: query.clone(),
                 kind: PaletteEntryKind::Calculation,
                 icon: None,
-                keywords: vec![query.to_owned(), "calculator".into()],
+                keywords: vec![query.clone(), "calculator".into()],
                 preview: "Press Enter to copy the result".into(),
                 frequency: u32::MAX,
                 favorite: true,
@@ -415,10 +545,65 @@ impl Palette {
         let placeholder = match surface {
             PaletteSurface::Launcher => "Search apps, files, and tools…",
             PaletteSurface::Clipboard => "Search clipboard history…",
+            PaletteSurface::Tools => "Search mini tools…",
+            PaletteSurface::Emoji => "Search emoji by name…",
+            PaletteSurface::Currency => "Try 100 USD to EUR or 0.1 BTC in USD…",
         };
         self.search_input
             .update(cx, |input, cx| input.reset(placeholder, cx));
         self.results_scroll.scroll_to_item(0);
+        self.refresh_results(cx);
+    }
+
+    fn refresh_currency(&mut self, cx: &mut Context<Self>) {
+        let Some(query) = CurrencyQuery::parse(self.model.query()) else {
+            self.currency_query = None;
+            self.currency_result = None;
+            self.model.replace_entries(Vec::new());
+            return;
+        };
+        if self.currency_query.as_ref() == Some(&query) {
+            self.show_currency_result();
+            return;
+        }
+
+        self.currency_query = Some(query.clone());
+        self.currency_result = None;
+        self.model
+            .replace_entries(vec![currency_loading_entry(&query)]);
+        let root = data_root();
+        let requested_query = query.clone();
+        cx.spawn(async move |this, cx| {
+            let task = cx
+                .background_executor()
+                .spawn(async move { currency::convert(query.clone(), &root) });
+            let result = task.await;
+            let _ = this.update(cx, |palette, cx| {
+                if palette.currency_query.as_ref() == Some(&requested_query) {
+                    palette.currency_result = Some(result);
+                    palette.show_currency_result();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn show_currency_result(&mut self) {
+        let entries = match &self.currency_result {
+            None => self
+                .currency_query
+                .as_ref()
+                .map(currency_loading_entry)
+                .into_iter()
+                .collect(),
+            Some(Ok(result)) => vec![currency_result_entry(result)],
+            Some(Err(error)) => {
+                self.notice = Some(error.clone());
+                Vec::new()
+            }
+        };
+        self.model.replace_entries(entries);
     }
 }
 
@@ -444,8 +629,15 @@ impl Render for Palette {
                 || "Actions".into(),
                 |entry| format!("Actions for {}", entry.title),
             )
-        } else if self.surface == PaletteSurface::Clipboard {
-            "Clipboard History".into()
+        } else if self.surface != PaletteSurface::Launcher {
+            match self.surface {
+                PaletteSurface::Clipboard => "Clipboard History",
+                PaletteSurface::Tools => "Mini Tools",
+                PaletteSurface::Emoji => "Emoji Picker",
+                PaletteSurface::Currency => "Currency & Crypto",
+                PaletteSurface::Launcher => unreachable!(),
+            }
+            .into()
         } else if self.model.query().is_empty() {
             "Suggestions".into()
         } else {
@@ -470,8 +662,14 @@ impl Render for Palette {
         };
 
         let footer_label = self.notice.clone().unwrap_or_else(|| {
-            if self.surface == PaletteSurface::Clipboard {
-                format!("{} items", matches.len())
+            if self.surface != PaletteSurface::Launcher {
+                match self.surface {
+                    PaletteSurface::Clipboard => format!("{} clipboard items", matches.len()),
+                    PaletteSurface::Tools => format!("{} tools", matches.len()),
+                    PaletteSurface::Emoji => format!("{} emoji", matches.len()),
+                    PaletteSurface::Currency => "Live rates · cached for offline use".into(),
+                    PaletteSurface::Launcher => unreachable!(),
+                }
             } else if self.model.query().is_empty() {
                 format!("{} applications", self.application_count)
             } else {
@@ -549,13 +747,13 @@ impl Render for Palette {
                                             div()
                                                 .text_size(px(14.0))
                                                 .font_weight(FontWeight::MEDIUM)
-                                                .child("No matches found"),
+                                                .child(empty_title(self.surface)),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(12.0))
                                                 .text_color(colors.muted)
-                                                .child("Try an app name or a file keyword"),
+                                                .child(empty_hint(self.surface)),
                                         ),
                                 )
                             })
@@ -820,6 +1018,8 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
         PaletteEntryKind::Command => "›".into(),
         PaletteEntryKind::Calculation => "=".into(),
         PaletteEntryKind::Clipboard => "⎘".into(),
+        PaletteEntryKind::Tool => "◇".into(),
+        PaletteEntryKind::Emoji => entry.title.clone(),
     };
     if let Some(path) = entry.icon.as_ref().filter(|path| is_renderable_image(path)) {
         let fallback_label = label.clone();
@@ -870,6 +1070,70 @@ fn is_renderable_image(path: &Path) -> bool {
                 .iter()
                 .any(|supported| extension.eq_ignore_ascii_case(supported))
         })
+}
+
+fn currency_loading_entry(query: &CurrencyQuery) -> PaletteEntry {
+    PaletteEntry {
+        id: "currency:loading".into(),
+        title: format!("Fetching {} → {}…", query.from, query.to),
+        subtitle: "Checking the latest exchange rate".into(),
+        kind: PaletteEntryKind::Calculation,
+        icon: None,
+        keywords: Vec::new(),
+        preview: "Live currency conversion".into(),
+        frequency: 100,
+        favorite: true,
+        actions: Vec::new(),
+    }
+}
+
+fn currency_result_entry(result: &Conversion) -> PaletteEntry {
+    let value = result.display_value();
+    let source = if result.cached {
+        "Cached rate"
+    } else {
+        "Live rate"
+    };
+    let observed = chrono::DateTime::from_timestamp_millis(result.observed_at_ms).map_or_else(
+        || source.to_owned(),
+        |time| format!("{source} · {}", time.format("%b %-d, %H:%M UTC")),
+    );
+    PaletteEntry {
+        id: "currency:result".into(),
+        title: format!("{value} {}", result.query.to),
+        subtitle: format!("{} {} · {observed}", result.query.amount, result.query.from),
+        kind: PaletteEntryKind::Calculation,
+        icon: None,
+        keywords: vec![result.query.from.to_string(), result.query.to.to_string()],
+        preview: "Press Enter to copy the converted amount".into(),
+        frequency: u32::MAX,
+        favorite: true,
+        actions: vec![ActionItem {
+            id: "copy-currency".into(),
+            title: "Copy Converted Amount".into(),
+            shortcut: Some("↵".into()),
+        }],
+    }
+}
+
+const fn empty_title(surface: PaletteSurface) -> &'static str {
+    match surface {
+        PaletteSurface::Currency => "Type a conversion",
+        PaletteSurface::Emoji => "No emoji found",
+        PaletteSurface::Tools => "No tools found",
+        PaletteSurface::Clipboard => "No clipboard items",
+        PaletteSurface::Launcher => "No matches found",
+    }
+}
+
+const fn empty_hint(surface: PaletteSurface) -> &'static str {
+    match surface {
+        PaletteSurface::Currency => "Example: 100 USD to EUR",
+        PaletteSurface::Emoji => "Try a feeling, object, or symbol",
+        PaletteSurface::Tools => "Try currency, emoji, UUID, note, or command",
+        PaletteSurface::Clipboard => "Copy something and it will appear here",
+        PaletteSurface::Launcher => "Try an app name or a file keyword",
+    }
 }
 
 fn calculate(query: &str) -> Option<String> {

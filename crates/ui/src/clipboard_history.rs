@@ -121,8 +121,7 @@ impl ClipboardHistory {
 fn presentation(entry: &ClipboardEntry) -> (String, &'static str) {
     let format = match entry.kind {
         ClipboardKind::Text => "Text",
-        ClipboardKind::Html => "Rich text",
-        ClipboardKind::Rtf => "Rich text",
+        ClipboardKind::Html | ClipboardKind::Rtf => "Rich text",
         ClipboardKind::Image => "Image",
         ClipboardKind::Files => "Files",
     };

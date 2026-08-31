@@ -50,6 +50,10 @@ pub enum PaletteEntryKind {
     Calculation,
     /// A durable clipboard-history item.
     Clipboard,
+    /// A focused built-in or user-defined mini tool.
+    Tool,
+    /// A searchable Unicode emoji.
+    Emoji,
 }
 
 impl PaletteEntryKind {
@@ -62,6 +66,8 @@ impl PaletteEntryKind {
             Self::Command => "Command",
             Self::Calculation => "Copy result",
             Self::Clipboard => "Clipboard",
+            Self::Tool => "Tool",
+            Self::Emoji => "Emoji",
         }
     }
 }
