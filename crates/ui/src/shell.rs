@@ -7,7 +7,7 @@ use gpui::{
     KeyDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Window,
     div, px,
 };
-use superspace_core::builtin_features;
+use superspace_core::{LauncherPreferences, builtin_features};
 use superspace_platform::AppDescriptor;
 
 use crate::{
@@ -24,6 +24,8 @@ pub struct Palette {
     file_index: Option<superspace_files::FileIndex>,
     files: HashMap<String, PathBuf>,
     theme_kind: theme::ThemeKind,
+    preferences: LauncherPreferences,
+    preferences_path: PathBuf,
 }
 
 impl Palette {
@@ -56,24 +58,40 @@ impl Palette {
                 ],
             })
             .collect::<Vec<_>>();
+        let preferences_path = data_root().join("launcher.json");
+        let preferences = LauncherPreferences::load(&preferences_path).unwrap_or_default();
+        for entry in &mut entries {
+            apply_preference(entry, &preferences);
+        }
         let applications =
             superspace_platform::discover_apps(&superspace_platform::default_app_roots())
                 .unwrap_or_default()
                 .into_iter()
                 .map(|application| (format!("app:{}", application.id), application))
                 .collect::<HashMap<_, _>>();
-        entries.extend(applications.iter().map(|(id, application)| PaletteEntry {
-            id: id.clone(),
-            title: application.name.clone(),
-            keywords: application.keywords.clone(),
-            preview: format!("Launch {}", application.name),
-            frequency: 0,
-            favorite: false,
-            actions: vec![ActionItem {
-                id: "launch".into(),
-                title: "Launch Application".into(),
-                shortcut: Some("↵".into()),
-            }],
+        entries.extend(applications.iter().map(|(id, application)| {
+            let mut entry = PaletteEntry {
+                id: id.clone(),
+                title: application.name.clone(),
+                keywords: application.keywords.clone(),
+                preview: format!("Launch {}", application.name),
+                frequency: 0,
+                favorite: false,
+                actions: vec![
+                    ActionItem {
+                        id: "launch".into(),
+                        title: "Launch Application".into(),
+                        shortcut: Some("↵".into()),
+                    },
+                    ActionItem {
+                        id: "favorite".into(),
+                        title: "Toggle Favorite".into(),
+                        shortcut: None,
+                    },
+                ],
+            };
+            apply_preference(&mut entry, &preferences);
+            entry
         }));
         let status = format!("{} applications indexed", applications.len());
         let base_entries = entries.clone();
@@ -86,6 +104,8 @@ impl Palette {
             file_index: open_file_index(),
             files: HashMap::new(),
             theme_kind: theme::ThemeKind::default(),
+            preferences,
+            preferences_path,
         }
     }
 
@@ -141,10 +161,14 @@ impl Palette {
 
     fn invoke(&mut self, entry_id: &str, action_id: &str) {
         if action_id == "launch" {
-            self.status = self.applications.get(entry_id).map_or_else(
+            let application = self.applications.get(entry_id).cloned();
+            self.status = application.map_or_else(
                 || format!("Application disappeared: {entry_id}"),
                 |application| match application.launch() {
-                    Ok(process_id) => format!("Launched {} ({process_id})", application.name),
+                    Ok(process_id) => {
+                        self.record_invocation(entry_id);
+                        format!("Launched {} ({process_id})", application.name)
+                    }
                     Err(error) => format!("Could not launch {}: {error}", application.name),
                 },
             );
@@ -161,8 +185,52 @@ impl Palette {
                 || format!("File disappeared: {entry_id}"),
                 |path| format!("Ready to share {} with a nearby device", path.display()),
             );
+        } else if action_id == "favorite" {
+            self.toggle_favorite(entry_id);
         } else {
             self.status = format!("Requested {action_id} for {entry_id}");
+        }
+    }
+
+    fn toggle_favorite(&mut self, entry_id: &str) {
+        match self.preferences.toggle_favorite(entry_id) {
+            Ok(favorite) => {
+                self.apply_saved_preference(entry_id);
+                self.status = if favorite {
+                    format!("Added {entry_id} to favorites")
+                } else {
+                    format!("Removed {entry_id} from favorites")
+                };
+            }
+            Err(error) => self.status = format!("Could not update favorite: {error}"),
+        }
+    }
+
+    fn record_invocation(&mut self, entry_id: &str) {
+        if self.preferences.record_invocation(entry_id).is_ok() {
+            self.apply_saved_preference(entry_id);
+        }
+    }
+
+    fn apply_saved_preference(&mut self, entry_id: &str) {
+        let Some(preference) = self.preferences.get(entry_id) else {
+            return;
+        };
+        self.model.update_preference(
+            entry_id,
+            preference.alias.as_deref(),
+            preference.favorite,
+            preference.frequency,
+        );
+        if let Some(entry) = self
+            .base_entries
+            .iter_mut()
+            .find(|entry| entry.id == entry_id)
+        {
+            apply_preference(entry, &self.preferences);
+        }
+        if let Err(error) = self.preferences.save(&self.preferences_path) {
+            self.status = format!("Could not save launcher preferences: {error}");
         }
     }
 
@@ -390,9 +458,22 @@ fn preview(id: &str) -> &'static str {
 }
 
 fn open_file_index() -> Option<superspace_files::FileIndex> {
-    let root =
-        std::env::var_os("SUPERSPACE_DATA_DIR").map_or_else(default_data_root, PathBuf::from);
-    superspace_files::FileIndex::open(root.join("files.sqlite")).ok()
+    superspace_files::FileIndex::open(data_root().join("files.sqlite")).ok()
+}
+
+fn apply_preference(entry: &mut PaletteEntry, preferences: &LauncherPreferences) {
+    if let Some(preference) = preferences.get(&entry.id) {
+        if let Some(alias) = &preference.alias {
+            entry.keywords.push(format!("alias:{alias}"));
+            entry.keywords.push(alias.clone());
+        }
+        entry.favorite = preference.favorite;
+        entry.frequency = preference.frequency;
+    }
+}
+
+fn data_root() -> PathBuf {
+    std::env::var_os("SUPERSPACE_DATA_DIR").map_or_else(default_data_root, PathBuf::from)
 }
 
 fn default_data_root() -> PathBuf {

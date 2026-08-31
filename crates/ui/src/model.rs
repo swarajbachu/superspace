@@ -184,6 +184,30 @@ impl PaletteModel {
         }
     }
 
+    /// Apply persisted ranking metadata to an entry and rerank the current query.
+    pub fn update_preference(
+        &mut self,
+        id: &str,
+        alias: Option<&str>,
+        favorite: bool,
+        frequency: u32,
+    ) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
+            return false;
+        };
+        entry
+            .keywords
+            .retain(|keyword| !keyword.starts_with("alias:"));
+        if let Some(alias) = alias {
+            entry.keywords.push(format!("alias:{alias}"));
+            entry.keywords.push(alias.to_owned());
+        }
+        entry.favorite = favorite;
+        entry.frequency = frequency;
+        self.rerank();
+        true
+    }
+
     /// Apply one normalized keyboard event and return any requested side effect.
     pub fn key(&mut self, key: PaletteKey) -> PaletteEvent {
         match key {
@@ -381,5 +405,17 @@ mod tests {
             }
         );
         assert_eq!(model.invoke(2), PaletteEvent::None);
+    }
+
+    #[test]
+    fn persisted_preferences_affect_search_and_ordering() {
+        let mut model = PaletteModel::new(entries());
+        assert!(model.update_preference("clipboard", Some("pasteboard"), true, 7));
+        assert_eq!(model.selected_entry().unwrap().id, "clipboard");
+        for character in "pasteboard".chars() {
+            model.key(PaletteKey::Text(character.to_string()));
+        }
+        assert_eq!(model.selected_entry().unwrap().id, "clipboard");
+        assert!(!model.update_preference("missing", None, false, 0));
     }
 }

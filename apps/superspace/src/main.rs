@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
-use superspace_core::builtin_features;
+use superspace_core::{LauncherPreferences, builtin_features};
 use superspace_productivity::{
     Item, ItemContent, ProductivityStore, expand_snippet, resolve_command, resolve_quicklink,
     search_emoji,
@@ -27,10 +27,44 @@ fn main() -> Result<()> {
             }
             launch_app(&id)?;
         }
+        Some("launcher") => launcher(arguments)?,
         Some("productivity") => productivity(arguments)?,
         Some("files") => files(arguments)?,
         Some("--version" | "-V") => println!("superspace {}", env!("CARGO_PKG_VERSION")),
         Some(command) => bail!("unknown command: {command}"),
+    }
+    Ok(())
+}
+
+fn launcher(mut arguments: impl Iterator<Item = String>) -> Result<()> {
+    let action = arguments
+        .next()
+        .context("usage: superspace launcher <alias|favorite|show> <item-id> [alias]")?;
+    let id = required(&mut arguments, "item id")?;
+    let path = data_root().join("launcher.json");
+    let mut preferences = LauncherPreferences::load(&path)?;
+    match action.as_str() {
+        "alias" => {
+            let alias = arguments.collect::<Vec<_>>().join(" ");
+            if alias.is_empty() {
+                bail!("usage: superspace launcher alias <item-id> <alias|--clear>");
+            }
+            preferences.set_alias(&id, (alias != "--clear").then_some(alias.as_str()))?;
+            preferences.save(path)?;
+            println!("updated alias for {id}");
+        }
+        "favorite" => {
+            no_more(arguments)?;
+            let favorite = preferences.toggle_favorite(&id)?;
+            preferences.save(path)?;
+            println!("{}", if favorite { "favorite" } else { "not favorite" });
+        }
+        "show" => {
+            no_more(arguments)?;
+            let preference = preferences.get(&id);
+            println!("{}", serde_json::to_string_pretty(&preference)?);
+        }
+        _ => bail!("usage: superspace launcher <alias|favorite|show> <item-id> [alias]"),
     }
     Ok(())
 }
