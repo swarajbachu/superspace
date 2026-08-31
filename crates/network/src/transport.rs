@@ -302,7 +302,11 @@ fn fingerprint(certificate: &[u8]) -> String {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
+    use superspace_protocol::{DeviceInfo, Message, PROTOCOL_VERSION};
+    use uuid::Uuid;
+
     use super::*;
+    use crate::{read_frame, write_frame};
 
     #[test]
     fn private_identity_debug_is_redacted_and_restore_validates() {
@@ -350,14 +354,25 @@ mod tests {
         let accepted = accepted.expect("accepted connection");
         let connected = connected.expect("connected");
         let (mut send, mut receive) = connected.open_bi().await.expect("open stream");
-        send.write_all(b"clipboard event").await.expect("write");
+        let hello = Message::Hello(DeviceInfo {
+            id: Uuid::new_v4(),
+            name: "MacBook".into(),
+            platform: "macos".into(),
+            protocol_versions: vec![PROTOCOL_VERSION],
+        });
+        write_frame(&mut send, &hello).await.expect("write frame");
         send.finish().expect("finish stream");
         let (mut outgoing, mut incoming) = accepted.accept_bi().await.expect("accept stream");
-        let bytes = incoming.read_to_end(1024).await.expect("read stream");
-        assert_eq!(bytes, b"clipboard event");
-        outgoing.write_all(b"ack").await.expect("write ack");
+        assert_eq!(read_frame(&mut incoming).await.expect("read frame"), hello);
+        let acknowledgement = Message::Acknowledge { id: Uuid::nil() };
+        write_frame(&mut outgoing, &acknowledgement)
+            .await
+            .expect("write ack");
         outgoing.finish().expect("finish ack");
-        assert_eq!(receive.read_to_end(16).await.expect("read ack"), b"ack");
+        assert_eq!(
+            read_frame(&mut receive).await.expect("read ack"),
+            acknowledgement
+        );
     }
 
     #[tokio::test]

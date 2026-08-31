@@ -5949,6 +5949,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "rustls",
+ "serde_json",
  "snow",
  "superspace-protocol",
  "tempfile",

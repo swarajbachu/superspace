@@ -14,6 +14,7 @@ mdns-sd.workspace = true
 quinn.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+serde_json.workspace = true
 snow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
