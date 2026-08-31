@@ -12,7 +12,9 @@ use crate::{
     BlobReceiver, BlobTransferError, FrameError, MAX_CHUNK_SIZE, read_blob_chunk, read_frame,
     write_frame,
 };
-use crate::{TransferError, TransferProgress, TransferReceiver, read_transfer_chunk};
+use crate::{
+    PublishedTransfer, TransferError, TransferProgress, TransferReceiver, read_transfer_chunk,
+};
 
 const MAX_DEVICE_NAME_CHARS: usize = 128;
 const MAX_PLATFORM_CHARS: usize = 64;
@@ -136,10 +138,12 @@ impl TransferRequest {
     /// Returns manifest, disk, framing, stream, integrity, or cancellation failures.
     pub async fn receive_with_progress(
         mut self,
+        expected_origin: DeviceId,
         incoming_root: impl Into<PathBuf>,
         cancellation: &TransferCancellation,
         mut on_progress: impl FnMut(TransferProgress),
-    ) -> Result<PathBuf, TransferSessionError> {
+    ) -> Result<PublishedTransfer, TransferSessionError> {
+        validate_transfer_origin(&self.manifest, expected_origin)?;
         let mut receiver = TransferReceiver::begin(incoming_root, self.manifest.clone())?;
         on_progress(receiver.progress());
         write_frame(
@@ -331,6 +335,16 @@ fn validate_info(info: &DeviceInfo) -> Result<(), PeerSessionError> {
     }
     if !info.protocol_versions.contains(&PROTOCOL_VERSION) {
         return Err(PeerSessionError::IncompatibleProtocol);
+    }
+    Ok(())
+}
+
+fn validate_transfer_origin(
+    manifest: &TransferManifest,
+    expected_origin: DeviceId,
+) -> Result<(), TransferError> {
+    if manifest.origin != expected_origin {
+        return Err(TransferError::OriginMismatch);
     }
     Ok(())
 }
@@ -626,10 +640,12 @@ pub async fn send_transfer_with_progress(
 /// Returns framing, stream, manifest, disk, path, offset, or integrity failures.
 pub async fn receive_transfer(
     connection: &Connection,
+    expected_origin: DeviceId,
     incoming_root: impl Into<PathBuf>,
-) -> Result<PathBuf, TransferSessionError> {
+) -> Result<PublishedTransfer, TransferSessionError> {
     receive_transfer_with_progress(
         connection,
+        expected_origin,
         incoming_root,
         &TransferCancellation::new(),
         |_| {},
@@ -645,17 +661,18 @@ pub async fn receive_transfer(
 /// Returns the same failures as [`receive_transfer`], plus cancellation from either peer.
 pub async fn receive_transfer_with_progress(
     connection: &Connection,
+    expected_origin: DeviceId,
     incoming_root: impl Into<PathBuf>,
     cancellation: &TransferCancellation,
     on_progress: impl FnMut(TransferProgress),
-) -> Result<PathBuf, TransferSessionError> {
+) -> Result<PublishedTransfer, TransferSessionError> {
     match receive_peer_request(connection)
         .await
         .map_err(TransferSessionError::Incoming)?
     {
         IncomingPeerRequest::Transfer(request) => {
             request
-                .receive_with_progress(incoming_root, cancellation, on_progress)
+                .receive_with_progress(expected_origin, incoming_root, cancellation, on_progress)
                 .await
         }
         IncomingPeerRequest::Clipboard(_) | IncomingPeerRequest::Blob(_) => {
@@ -776,6 +793,25 @@ mod tests {
         );
         sent.expect("offer clipboard");
         assert_eq!(received, event);
+    }
+
+    #[test]
+    fn transfer_origin_must_match_the_authenticated_peer() {
+        let manifest = TransferManifest {
+            id: uuid::Uuid::new_v4(),
+            origin: uuid::Uuid::from_u128(1),
+            name: "nearby.txt".into(),
+            entries: vec![superspace_protocol::TransferEntry {
+                relative_path: "nearby.txt".into(),
+                size: 1,
+                hash: ContentHash::digest(b"x"),
+            }],
+        };
+        assert!(validate_transfer_origin(&manifest, manifest.origin).is_ok());
+        assert!(matches!(
+            validate_transfer_origin(&manifest, uuid::Uuid::from_u128(2)),
+            Err(TransferError::OriginMismatch)
+        ));
     }
 
     #[test]
@@ -912,6 +948,7 @@ mod tests {
         let (receive_outcome, send_outcome) = tokio::join!(
             receive_transfer_with_progress(
                 &server_connection,
+                manifest.origin,
                 incoming,
                 &receive_cancellation,
                 |progress| received_progress.push(progress),
@@ -927,7 +964,8 @@ mod tests {
         send_outcome.expect("send transfer");
         let destination = receive_outcome.expect("receive transfer");
         assert_eq!(
-            std::fs::read(destination.join("nested/data.bin")).expect("destination file"),
+            std::fs::read(destination.destination().join("nested/data.bin"))
+                .expect("destination file"),
             bytes
         );
         assert!(

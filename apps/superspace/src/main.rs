@@ -210,12 +210,13 @@ fn run_peer_file(
         } else {
             let destination = superspace_network::receive_transfer_with_progress(
                 &connection,
+                peer_id,
                 root.join("incoming"),
                 &cancellation,
                 |progress| print_transfer_progress("receiving", "transfer", &progress),
             )
             .await?;
-            println!("received {}", destination.display());
+            println!("received {}", destination.destination().display());
         }
         Result::<()>::Ok(())
     })
@@ -313,14 +314,14 @@ async fn clipboard_connection_loop(
                     outgoing = None;
                 }
                 request = superspace_network::receive_peer_request(connection) => {
-                    handle_peer_request(&mut sync, connection, root, request?, now_u64()).await?;
+                    handle_peer_request(&mut sync, connection, root, peer_id, request?, now_u64()).await?;
                 }
                 _ = interval.tick() => {}
             }
         } else {
             tokio::select! {
                 request = superspace_network::receive_peer_request(connection) => {
-                    handle_peer_request(&mut sync, connection, root, request?, now_u64()).await?;
+                    handle_peer_request(&mut sync, connection, root, peer_id, request?, now_u64()).await?;
                 }
                 _ = interval.tick() => {
                     let now = now_u64();
@@ -345,6 +346,7 @@ async fn handle_peer_request(
     sync: &mut superspace_sync::ClipboardSync<superspace_platform::NativeClipboard>,
     connection: &quinn::Connection,
     root: &Path,
+    peer_id: Uuid,
     request: superspace_network::IncomingPeerRequest,
     now: u64,
 ) -> Result<()> {
@@ -356,7 +358,7 @@ async fn handle_peer_request(
             let name = request.manifest().name.clone();
             let cancellation = superspace_network::TransferCancellation::new();
             let destination = request
-                .receive_with_progress(root.join("incoming"), &cancellation, |progress| {
+                .receive_with_progress(peer_id, root.join("incoming"), &cancellation, |progress| {
                     eprintln!(
                         "receiving {name}: {}/{} bytes ({}/{})",
                         progress.completed_bytes,
@@ -366,7 +368,7 @@ async fn handle_peer_request(
                     );
                 })
                 .await?;
-            println!("received {}", destination.display());
+            println!("received {}", destination.destination().display());
         }
         superspace_network::IncomingPeerRequest::Clipboard(offer) => {
             let outcome = sync.receive(&offer.event, now)?;

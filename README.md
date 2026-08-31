@@ -85,9 +85,12 @@ cargo run -p superspace -- nearby file-send 192.168.1.20:43872 <RECEIVER_PEER_ID
 ```
 
 Incoming content is integrity-checked and published under the Superspace data directory's
-`incoming/` folder without overwriting an existing destination. Automatic discovery and desktop
-file-sharing UI are still under active development; the feature checklist deliberately leaves the
-broader product requirements unchecked until they are integrated and physically verified.
+`incoming/` folder without overwriting an existing destination. The receiver also checks that the
+manifest origin is the authenticated paired peer; only a verified published destination can satisfy
+a matching file clipboard event. Automatic discovery, native file-list clipboard adapters, and the
+desktop file-sharing UI are still under active development; the feature checklist deliberately
+leaves the broader product requirements unchecked until they are integrated and physically
+verified.
 
 On Ubuntu, the GPUI desktop build requires:
 

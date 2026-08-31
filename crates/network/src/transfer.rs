@@ -2,7 +2,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
-use superspace_protocol::{ContentHash, DeviceId, TransferChunk, TransferEntry, TransferManifest};
+use superspace_protocol::{
+    ContentHash, DeviceId, TransferChunk, TransferEntry, TransferId, TransferManifest,
+};
 use thiserror::Error;
 
 /// Maximum application payload per file chunk.
@@ -14,6 +16,39 @@ const MAX_TRANSFER_ENTRIES: usize = 100_000;
 pub struct PreparedTransfer {
     source_root: PathBuf,
     manifest: TransferManifest,
+}
+
+/// An integrity-verified transfer that has been atomically published to a local destination.
+///
+/// The fields are intentionally private: downstream clipboard code can only obtain this proof
+/// after [`TransferReceiver::finish`] has verified every manifest entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublishedTransfer {
+    id: TransferId,
+    origin: DeviceId,
+    destination: PathBuf,
+}
+
+impl PublishedTransfer {
+    /// Stable transfer identity from the verified manifest.
+    #[must_use]
+    pub const fn id(&self) -> TransferId {
+        self.id
+    }
+
+    /// Device identity claimed by the verified manifest.
+    ///
+    /// Authenticated session entry points additionally require this to match the paired peer.
+    #[must_use]
+    pub const fn origin(&self) -> DeviceId {
+        self.origin
+    }
+
+    /// Canonical local file or directory published by the transfer.
+    #[must_use]
+    pub fn destination(&self) -> &Path {
+        &self.destination
+    }
 }
 
 impl PreparedTransfer {
@@ -119,6 +154,9 @@ pub enum TransferError {
     /// Existing staging content conflicts with the authenticated manifest.
     #[error("file transfer resume state is invalid")]
     InvalidResumeState,
+    /// Transfer manifest origin does not match the authenticated peer.
+    #[error("file transfer origin does not match the authenticated peer")]
+    OriginMismatch,
     /// Aggregate manifest size cannot be represented safely.
     #[error("file transfer size overflows supported limits")]
     SizeOverflow,
@@ -361,7 +399,7 @@ impl TransferReceiver {
     /// # Errors
     ///
     /// Returns [`TransferError::Incomplete`] until every file passes integrity verification.
-    pub fn finish(mut self) -> Result<PathBuf, TransferError> {
+    pub fn finish(mut self) -> Result<PublishedTransfer, TransferError> {
         if self.entries.iter().any(|entry| !entry.complete) {
             return Err(TransferError::Incomplete);
         }
@@ -375,7 +413,12 @@ impl TransferReceiver {
         } else {
             fs::rename(&self.staging_root, &destination)?;
         }
-        Ok(destination)
+        let destination = fs::canonicalize(destination)?;
+        Ok(PublishedTransfer {
+            id: self.manifest.id,
+            origin: self.manifest.origin,
+            destination,
+        })
     }
 }
 
@@ -633,8 +676,13 @@ mod tests {
             })
             .expect("file chunk");
         let destination = receiver.finish().expect("publish file");
-        assert!(destination.is_file());
-        assert_eq!(fs::read(destination).expect("read file"), bytes);
+        assert_eq!(destination.id(), manifest.id);
+        assert_eq!(destination.origin(), manifest.origin);
+        assert!(destination.destination().is_file());
+        assert_eq!(
+            fs::read(destination.destination()).expect("read file"),
+            bytes
+        );
     }
 
     #[test]
@@ -669,7 +717,7 @@ mod tests {
         assert!((receiver.progress().fraction() - 1.0).abs() <= f64::EPSILON);
         let destination = receiver.finish().expect("finish");
         assert_eq!(
-            fs::read(destination.join("folder/hello.txt")).expect("read"),
+            fs::read(destination.destination().join("folder/hello.txt")).expect("read"),
             bytes
         );
     }
@@ -722,6 +770,7 @@ mod tests {
             receiver
                 .finish()
                 .expect("finish")
+                .destination()
                 .file_name()
                 .and_then(|value| value.to_str()),
             Some("Shared Files 2")
@@ -749,7 +798,7 @@ mod tests {
         assert_eq!(receiver.resume_offsets(), [0]);
         let destination = receiver.finish().expect("finish empty transfer");
         assert_eq!(
-            fs::metadata(destination.join("folder/hello.txt"))
+            fs::metadata(destination.destination().join("folder/hello.txt"))
                 .expect("empty file metadata")
                 .len(),
             0
@@ -786,7 +835,7 @@ mod tests {
             .expect("final chunk");
         let destination = receiver.finish().expect("finish");
         assert_eq!(
-            fs::read(destination.join("folder/hello.txt")).expect("read"),
+            fs::read(destination.destination().join("folder/hello.txt")).expect("read"),
             bytes
         );
     }

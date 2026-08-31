@@ -3,7 +3,7 @@
 use std::io::Cursor;
 use std::path::PathBuf;
 
-use superspace_network::{ApplyDecision, ReplicationError, ReplicationLedger};
+use superspace_network::{ApplyDecision, PublishedTransfer, ReplicationError, ReplicationLedger};
 use superspace_platform::{CaptureDisposition, ClipboardCapturePolicy, ClipboardContext};
 use superspace_platform::{ClipboardBackend, ClipboardError, ClipboardMonitor, ClipboardValue};
 use superspace_protocol::{
@@ -188,21 +188,21 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
     pub fn receive_files(
         &mut self,
         event: &ClipboardEvent,
-        transfer_id: TransferId,
-        paths: Vec<PathBuf>,
+        transfer: &PublishedTransfer,
         now_millis: u64,
     ) -> Result<SyncOutcome, SyncError> {
         if event.format != ClipboardFormat::Files
+            || event.origin != transfer.origin()
             || !matches!(
                 event.content,
                 ClipboardContent::Transfer {
                     transfer_id: expected
-                } if expected == transfer_id
+                } if expected == transfer.id()
             )
         {
             return Err(SyncError::UnexpectedContent);
         }
-        let value = ClipboardValue::Files(paths);
+        let value = ClipboardValue::Files(vec![transfer.destination().to_path_buf()]);
         value.digest()?;
         let bytes = encode_paths(&value);
         self.apply_ready(event, &value, &bytes, now_millis)
@@ -552,7 +552,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use superspace_protocol::HybridTimestamp;
+    use superspace_network::TransferReceiver;
+    use superspace_protocol::{HybridTimestamp, TransferChunk, TransferEntry, TransferManifest};
 
     use super::*;
 
@@ -582,6 +583,35 @@ mod tests {
             ClipboardStore::memory().expect("history"),
             BlobStore::open(directory.path().join(id.to_string())).expect("blobs"),
         )
+    }
+
+    fn publish_file(
+        directory: &tempfile::TempDir,
+        id: TransferId,
+        origin: DeviceId,
+        bytes: &[u8],
+    ) -> PublishedTransfer {
+        let manifest = TransferManifest {
+            id,
+            origin,
+            name: "nearby.txt".into(),
+            entries: vec![TransferEntry {
+                relative_path: "nearby.txt".into(),
+                size: bytes.len() as u64,
+                hash: ContentHash::digest(bytes),
+            }],
+        };
+        let mut receiver =
+            TransferReceiver::begin(directory.path(), manifest).expect("begin transfer");
+        receiver
+            .accept(&TransferChunk {
+                transfer_id: id,
+                entry_index: 0,
+                offset: 0,
+                bytes: bytes.to_vec(),
+            })
+            .expect("receive transfer");
+        receiver.finish().expect("publish transfer")
     }
 
     #[test]
@@ -712,6 +742,56 @@ mod tests {
         assert_eq!(
             sync.receive_blob(&event, expected, 12).expect("apply"),
             SyncOutcome::Applied
+        );
+    }
+
+    #[test]
+    fn files_only_apply_from_the_matching_verified_transfer() {
+        let directory = tempfile::tempdir().expect("directory");
+        let local = Uuid::from_u128(1);
+        let remote = Uuid::from_u128(2);
+        let transfer_id = Uuid::from_u128(3);
+        let backend = MemoryBackend::default();
+        let mut sync = coordinator(&directory, local, backend.clone());
+        let published = publish_file(&directory, transfer_id, remote, b"verified nearby file");
+        let event = ClipboardEvent {
+            id: Uuid::from_u128(4),
+            origin: remote,
+            timestamp: HybridTimestamp::new(10),
+            format: ClipboardFormat::Files,
+            content: ClipboardContent::Transfer { transfer_id },
+        };
+
+        let wrong_transfer = ClipboardEvent {
+            content: ClipboardContent::Transfer {
+                transfer_id: Uuid::from_u128(5),
+            },
+            ..event.clone()
+        };
+        assert!(matches!(
+            sync.receive_files(&wrong_transfer, &published, 10),
+            Err(SyncError::UnexpectedContent)
+        ));
+        let wrong_origin = ClipboardEvent {
+            origin: Uuid::from_u128(6),
+            ..event.clone()
+        };
+        assert!(matches!(
+            sync.receive_files(&wrong_origin, &published, 10),
+            Err(SyncError::UnexpectedContent)
+        ));
+        assert!(backend.0.borrow().is_none());
+
+        assert_eq!(
+            sync.receive_files(&event, &published, 10)
+                .expect("apply files"),
+            SyncOutcome::Applied
+        );
+        assert_eq!(
+            backend.0.borrow().as_ref(),
+            Some(&ClipboardValue::Files(vec![
+                published.destination().to_path_buf()
+            ]))
         );
     }
 

@@ -65,7 +65,10 @@ the feature contract currently marks only the two fully verified calculator line
   verification, resume, progress, and cooperative cancellation. Deterministic outbound manifests
   recursively hash regular files while rejecting symlinks, empty folders, and non-portable paths.
   One-shot `file-listen`/`file-send` commands route files and folders through paired, certificate-
-  pinned sessions and publish single files without an unnecessary wrapper directory.
+  pinned sessions and publish single files without an unnecessary wrapper directory. Published
+  destinations carry a private, integrity-verified transfer proof; file clipboard events can only
+  consume a proof with the same transfer ID and origin, and session receivers reject manifests
+  whose origin differs from the authenticated peer.
 - Full calculator engine for arithmetic, scientific functions, bases, percentages, ratios, lists,
   units, dates, workdays, timespans, time zones, fiat, and crypto conversion.
 - Persistent quicklinks, Markdown snippets, keyword expansion, notes, explicit custom commands, and
@@ -97,15 +100,15 @@ restart, and expose status/errors in GPUI.
 
 ## Best next implementation sequence
 
-1. Associate file clipboard events with
-   verified transfer destinations before applying native file-list clipboard semantics.
-2. Replace manual listener/connector roles with one mDNS-driven service. Resolve trusted device IDs,
+1. Replace manual listener/connector roles with one mDNS-driven service. Resolve trusted device IDs,
    deduplicate simultaneous connections deterministically, reconnect with bounded backoff, touch
    `last_seen_at`, and preserve the offline queue across process restarts.
-3. Move the long-running nearby and clipboard services into the desktop composition root. GPUI must
+2. Move the long-running nearby and clipboard services into the desktop composition root. GPUI must
    receive immutable status/progress events; it must not perform blocking SQLite/network work.
-4. Build clipboard-history and Nearby GPUI surfaces, including drag/drop, device picker, progress,
+3. Build clipboard-history and Nearby GPUI surfaces, including drag/drop, device picker, progress,
    cancellation, retry, trust management, privacy controls, and transfer notifications.
+4. Add native macOS and Linux file-list clipboard adapters, then retain and pair incoming clipboard
+   offers with their matching published transfer proof in the session dispatcher.
 5. Complete launcher lifecycle: configurable global/per-command/per-app shortcuts, tray/menu-bar,
    hide/show behavior, launch at login, onboarding, permissions diagnostics, and updater.
 6. Complete built-in platform actions and productivity UI, then backup/restore and Raycast import.
@@ -123,7 +126,9 @@ AI remains intentionally outside this sequence until the user re-enables it.
 - There is no automatic daemon/tray lifecycle yet; nearby clipboard sessions are foreground CLI
   processes with manually supplied addresses.
 - File/folder transfer is currently a one-shot foreground CLI workflow. There is no GPUI send flow,
-  native file-list clipboard application, background queue, or automatic retry yet.
+  native file-list clipboard application, pending offer/transfer rendezvous, background queue, or
+  automatic retry yet. The sync boundary is ready for verified destinations, but the native backend
+  deliberately returns unsupported rather than degrading file lists to text.
 - Clipboard replication queues are memory-resident; history/trust are durable, but queued per-peer
   acknowledgements must be persisted for real restart reconciliation.
 - Native clipboard support currently reads/writes text and images through `arboard`; rich native
