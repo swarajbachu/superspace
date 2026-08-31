@@ -19,6 +19,47 @@ use uuid::Uuid;
 pub const MAX_INLINE_CLIPBOARD_BYTES: usize = 384 * 1024;
 const MAX_DECODED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 
+/// Reconstruct a pasteable clipboard value from one durable history entry.
+///
+/// # Errors
+///
+/// Returns an integrity, decoding, or I/O failure when referenced history content is unavailable
+/// or malformed.
+pub fn restore_history_value(
+    entry: &ClipboardEntry,
+    blobs: &BlobStore,
+) -> Result<ClipboardValue, SyncError> {
+    match entry.kind {
+        ClipboardKind::Text => entry
+            .text
+            .clone()
+            .filter(|text| !text.is_empty())
+            .map(ClipboardValue::Text)
+            .ok_or(SyncError::UnexpectedContent),
+        ClipboardKind::Html | ClipboardKind::Rtf | ClipboardKind::Image | ClipboardKind::Files => {
+            let hash = entry
+                .blob_hash
+                .as_deref()
+                .and_then(superspace_storage::BlobHash::parse)
+                .ok_or(SyncError::UnexpectedContent)?;
+            let bytes = blobs.read(&hash)?;
+            match entry.kind {
+                ClipboardKind::Html => {
+                    let (plain, html) = decode_rich(&bytes)?;
+                    Ok(ClipboardValue::Html { plain, html })
+                }
+                ClipboardKind::Rtf => {
+                    let (plain, rtf) = decode_rich(&bytes)?;
+                    Ok(ClipboardValue::Rtf { plain, rtf })
+                }
+                ClipboardKind::Image => decode_png(&bytes),
+                ClipboardKind::Files => decode_paths(&bytes),
+                ClipboardKind::Text => unreachable!("text history is restored without a blob"),
+            }
+        }
+    }
+}
+
 /// End-to-end clipboard capture, conflict resolution, persistence, and OS application.
 pub struct ClipboardSync<B> {
     local_device: DeviceId,
@@ -509,6 +550,33 @@ fn encode_paths(value: &ClipboardValue) -> Vec<u8> {
     bytes
 }
 
+fn decode_paths(bytes: &[u8]) -> Result<ClipboardValue, SyncError> {
+    let mut paths = Vec::new();
+    let mut offset = 0;
+    const WIDTH: usize = size_of::<usize>();
+    while offset < bytes.len() {
+        let length_bytes: [u8; WIDTH] = bytes
+            .get(offset..offset + WIDTH)
+            .ok_or(SyncError::InvalidFiles)?
+            .try_into()
+            .map_err(|_| SyncError::InvalidFiles)?;
+        offset += WIDTH;
+        let length = usize::from_le_bytes(length_bytes);
+        let end = offset.checked_add(length).ok_or(SyncError::InvalidFiles)?;
+        let path = std::str::from_utf8(bytes.get(offset..end).ok_or(SyncError::InvalidFiles)?)
+            .map_err(|_| SyncError::InvalidFiles)?;
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(SyncError::InvalidFiles);
+        }
+        paths.push(path);
+        offset = end;
+    }
+    let value = ClipboardValue::Files(paths);
+    value.digest().map_err(|_| SyncError::InvalidFiles)?;
+    Ok(value)
+}
+
 /// Clipboard coordination failures.
 #[derive(Debug, Error)]
 pub enum SyncError {
@@ -542,6 +610,9 @@ pub enum SyncError {
     /// Encoded or decoded image exceeds safety limits.
     #[error("clipboard image exceeds size limits")]
     ImageTooLarge,
+    /// Stored file-list metadata is malformed or unsafe.
+    #[error("clipboard file list is invalid")]
+    InvalidFiles,
     /// Rich text fields exceed the portable framing limit.
     #[error("clipboard text exceeds size limits")]
     TextTooLarge,
@@ -851,6 +922,43 @@ mod tests {
         assert_eq!(
             entries[0].source.application_id.as_deref(),
             Some("dev.terminal")
+        );
+    }
+
+    #[test]
+    fn durable_text_and_file_history_restore_to_platform_values() {
+        let directory = tempfile::tempdir().expect("directory");
+        let blobs = BlobStore::open(directory.path()).expect("blob store");
+        let text = ClipboardEntry {
+            id: Uuid::new_v4(),
+            kind: ClipboardKind::Text,
+            text: Some("restore me".into()),
+            blob_hash: None,
+            source: ClipboardSource::default(),
+            created_at: 1,
+            pinned_at: None,
+            sensitive: false,
+        };
+        assert_eq!(
+            restore_history_value(&text, &blobs).expect("restore text"),
+            ClipboardValue::Text("restore me".into())
+        );
+
+        let files = ClipboardValue::Files(vec![directory.path().join("document.txt")]);
+        let hash = blobs.put(&encode_paths(&files)).expect("store files");
+        let entry = ClipboardEntry {
+            id: Uuid::new_v4(),
+            kind: ClipboardKind::Files,
+            text: None,
+            blob_hash: Some(hash.as_str().into()),
+            source: ClipboardSource::default(),
+            created_at: 2,
+            pinned_at: None,
+            sensitive: false,
+        };
+        assert_eq!(
+            restore_history_value(&entry, &blobs).expect("restore files"),
+            files
         );
     }
 }

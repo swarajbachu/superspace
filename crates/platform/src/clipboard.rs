@@ -135,10 +135,14 @@ impl ClipboardBackend for NativeClipboard {
                 rgba: image.bytes.into_owned(),
             });
         }
-        self.inner
-            .get_text()
-            .map(ClipboardValue::Text)
-            .map_err(|_| ClipboardError::Empty)
+        if let Ok(text) = self.inner.get_text() {
+            return Ok(ClipboardValue::Text(text));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(files) = read_macos_files() {
+            return Ok(ClipboardValue::Files(files));
+        }
+        Err(ClipboardError::Empty)
     }
 
     fn write(&mut self, value: &ClipboardValue) -> Result<(), ClipboardError> {
@@ -165,8 +169,97 @@ impl ClipboardBackend for NativeClipboard {
                     })
                     .map_err(|_| ClipboardError::Unavailable)
             }
-            ClipboardValue::Files(_) => Err(ClipboardError::Unsupported),
+            ClipboardValue::Files(paths) => {
+                #[cfg(target_os = "macos")]
+                {
+                    return write_macos_files(paths);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = paths;
+                    Err(ClipboardError::Unsupported)
+                }
+            }
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_files() -> Option<Vec<PathBuf>> {
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "on run",
+            "-e",
+            "try",
+            "-e",
+            "set clipboardItems to the clipboard as list",
+            "-e",
+            "set outputText to \"\"",
+            "-e",
+            "repeat with clipboardItem in clipboardItems",
+            "-e",
+            "set outputText to outputText & POSIX path of clipboardItem & (ASCII character 0)",
+            "-e",
+            "end repeat",
+            "-e",
+            "return outputText",
+            "-e",
+            "on error",
+            "-e",
+            "return \"\"",
+            "-e",
+            "end try",
+            "-e",
+            "end run",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let paths = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|bytes| {
+            let value = std::str::from_utf8(bytes).ok()?.trim();
+            (!value.is_empty()).then(|| PathBuf::from(value))
+        })
+        .filter(|path| path.is_absolute())
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then_some(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn write_macos_files(paths: &[PathBuf]) -> Result<(), ClipboardError> {
+    if paths.is_empty() || paths.iter().any(|path| !path.is_absolute()) {
+        return Err(ClipboardError::InvalidContent);
+    }
+    let status = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "on run argv",
+            "-e",
+            "set clipboardFiles to {}",
+            "-e",
+            "repeat with filePath in argv",
+            "-e",
+            "set end of clipboardFiles to POSIX file filePath",
+            "-e",
+            "end repeat",
+            "-e",
+            "set the clipboard to clipboardFiles",
+            "-e",
+            "end run",
+            "--",
+        ])
+        .args(paths)
+        .status()
+        .map_err(|_| ClipboardError::Unavailable)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ClipboardError::Unavailable)
     }
 }
 
