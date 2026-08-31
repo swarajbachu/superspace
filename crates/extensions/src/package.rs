@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use thiserror::Error;
 use wasmparser::{Parser, Payload, Validator, WasmFeatures};
 
-use crate::{ExtensionManifest, INTERFACE_ID};
+use crate::{Capability, ExtensionManifest, INTERFACE_ID};
 
 const MAGIC: &[u8; 8] = b"SUPEREXT";
 const FORMAT_VERSION: u16 = 1;
@@ -151,7 +151,39 @@ fn validate_manifest(manifest: &ExtensionManifest) -> Result<(), PackageError> {
             return Err(PackageError::Manifest("invalid or duplicate command"));
         }
     }
+    let mut capabilities = std::collections::HashSet::new();
+    for capability in &manifest.capabilities {
+        if !capabilities.insert(capability) || !valid_capability(capability) {
+            return Err(PackageError::Manifest("invalid or duplicate capability"));
+        }
+    }
     Ok(())
+}
+
+fn valid_capability(capability: &Capability) -> bool {
+    match capability {
+        Capability::ClipboardRead | Capability::ClipboardWrite => true,
+        Capability::Filesystem(grant) => {
+            !grant.path.trim().is_empty() && grant.path.len() <= 4096 && !grant.path.contains('\0')
+        }
+        Capability::Network(grant) => {
+            !grant.origins.is_empty()
+                && grant.origins.len() <= 128
+                && grant.origins.iter().all(|origin| {
+                    origin.starts_with("https://")
+                        && origin.len() <= 2048
+                        && !origin[8..].is_empty()
+                        && !origin[8..].contains(['/', '?', '#', '*'])
+                })
+        }
+        Capability::Process(executables) => {
+            !executables.is_empty()
+                && executables.len() <= 128
+                && executables
+                    .iter()
+                    .all(|executable| !executable.trim().is_empty() && !executable.contains('\0'))
+        }
+    }
 }
 
 fn validate_component(module: &[u8]) -> Result<(), PackageError> {
@@ -257,5 +289,43 @@ mod tests {
             policy.require(&Capability::ClipboardWrite),
             Err(crate::PolicyError::Denied)
         );
+    }
+
+    #[test]
+    fn scoped_capabilities_validate_and_authorize_only_exact_resources() {
+        use std::path::Path;
+
+        use crate::{CapabilityPolicy, FilesystemGrant, NetworkGrant};
+
+        let policy = CapabilityPolicy::new([
+            Capability::Network(NetworkGrant {
+                origins: vec!["https://api.example.test".into()],
+            }),
+            Capability::Filesystem(FilesystemGrant {
+                path: "/tmp/superspace-extension".into(),
+                write: false,
+            }),
+            Capability::Process(vec!["/usr/bin/printf".into()]),
+        ]);
+        assert!(policy.require_network("https://api.example.test").is_ok());
+        assert!(policy.require_network("https://evil.example").is_err());
+        assert!(
+            policy
+                .require_filesystem(Path::new("/tmp/superspace-extension/file"), false)
+                .is_ok()
+        );
+        assert!(
+            policy
+                .require_filesystem(Path::new("/tmp/superspace-extension/file"), true)
+                .is_err()
+        );
+        assert!(policy.require_process("/usr/bin/printf").is_ok());
+        assert!(policy.require_process("/bin/sh").is_err());
+
+        let mut invalid = manifest();
+        invalid.capabilities = vec![Capability::Network(NetworkGrant {
+            origins: vec!["https://*.example.test".into()],
+        })];
+        assert!(ExtensionPackage::new(invalid, component()).is_err());
     }
 }

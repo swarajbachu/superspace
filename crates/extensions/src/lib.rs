@@ -6,12 +6,17 @@ mod manifest;
 mod package;
 mod policy;
 mod registry;
+mod view;
 
 pub use manifest::{Capability, Command, ExtensionManifest, FilesystemGrant, NetworkGrant};
 pub use package::{ExtensionPackage, PackageError};
 pub use policy::{CapabilityPolicy, PolicyError};
 pub use registry::{
-    PublisherIdentity, RegistryError, RegistryRecord, publish_package, verify_registry_package,
+    PublisherIdentity, RegistryCatalog, RegistryError, RegistryRecord, install_registry_package,
+    load_registry, publish_package, verify_registry_package,
+};
+pub use view::{
+    Action, Detail, FormField, FormFieldKind, GridItem, ListItem, Navigation, View, ViewError,
 };
 
 /// Stable component-model interface implemented by Superspace extensions.
@@ -24,3 +29,12 @@ pub use developer::{
     validate_package,
 };
 pub use host::{Sandbox, SandboxError, SandboxLimits};
+
+#[cfg(test)]
+mod contract_tests {
+    #[test]
+    fn embedded_wit_contract_parses() {
+        wit_parser::UnresolvedPackageGroup::parse("extension.wit", super::EXTENSION_WIT)
+            .expect("valid WIT contract");
+    }
+}

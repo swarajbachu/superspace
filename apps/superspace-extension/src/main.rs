@@ -5,8 +5,8 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 use superspace_extensions::{
-    PublisherIdentity, Sandbox, SandboxLimits, install_package, package_component, publish_package,
-    scaffold_extension, validate_package,
+    PublisherIdentity, Sandbox, SandboxLimits, install_package, install_registry_package,
+    load_registry, package_component, publish_package, scaffold_extension, validate_package,
 };
 
 fn main() -> Result<()> {
@@ -63,6 +63,29 @@ fn main() -> Result<()> {
             let record = publish_package(package, registry, &identity)?;
             println!("published {} {}", record.id, record.version);
         }
+        Some("registry-list") => {
+            let root = required(&mut arguments, "registry root")?;
+            no_more(arguments)?;
+            for record in load_registry(root)?.records {
+                println!(
+                    "{}\t{}\t{}",
+                    record.id, record.version, record.publisher_key
+                );
+            }
+        }
+        Some("registry-install") => {
+            let root = required(&mut arguments, "registry root")?;
+            let id = required(&mut arguments, "extension id")?;
+            let version = required(&mut arguments, "version")?
+                .parse()
+                .context("invalid semantic version")?;
+            let install_root = arguments
+                .next()
+                .map_or_else(default_install_root, PathBuf::from);
+            no_more(arguments)?;
+            let receipt = install_registry_package(root, install_root, &id, &version)?;
+            println!("installed {} {}", receipt.id, receipt.version);
+        }
         Some("run") => {
             let path = required(&mut arguments, "package path")?;
             no_more(arguments)?;
@@ -75,7 +98,7 @@ fn main() -> Result<()> {
         }
         Some("--version" | "-V") => println!("superspace-extension {}", env!("CARGO_PKG_VERSION")),
         _ => bail!(
-            "usage: superspace-extension <new|build|package|validate|install|keygen|publish|run> [arguments]"
+            "usage: superspace-extension <new|build|package|validate|install|keygen|publish|registry-list|registry-install|run> [arguments]"
         ),
     }
     Ok(())

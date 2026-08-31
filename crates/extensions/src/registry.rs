@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
@@ -98,6 +98,104 @@ pub struct RegistryRecord {
     pub publisher_key: String,
     /// Ed25519 signature over all preceding fields.
     pub signature: String,
+}
+
+/// Verified snapshot of a static extension registry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryCatalog {
+    /// Records whose signatures, hashes, paths, and package manifests all verify.
+    pub records: Vec<RegistryRecord>,
+}
+
+impl RegistryCatalog {
+    /// Find a verified extension version.
+    #[must_use]
+    pub fn find(&self, id: &str, version: &semver::Version) -> Option<&RegistryRecord> {
+        self.records
+            .iter()
+            .find(|record| record.id == id && &record.version == version)
+    }
+
+    /// Return the greatest verified semantic version for an extension.
+    #[must_use]
+    pub fn latest(&self, id: &str) -> Option<&RegistryRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.id == id)
+            .max_by(|left, right| left.version.cmp(&right.version))
+    }
+}
+
+/// Load a static registry, rejecting the entire catalog if any indexed artifact is invalid.
+///
+/// # Errors
+/// Returns an error for malformed layouts, records, signatures, hashes, or packages.
+pub fn load_registry(root: impl AsRef<Path>) -> Result<RegistryCatalog, RegistryError> {
+    let root = root.as_ref();
+    let index = root.join("index");
+    if !index.exists() {
+        return Ok(RegistryCatalog {
+            records: Vec::new(),
+        });
+    }
+    let mut records = Vec::new();
+    for id_entry in fs::read_dir(index)? {
+        let id_entry = id_entry?;
+        if !id_entry.file_type()?.is_dir() {
+            return Err(RegistryError::InvalidRecord);
+        }
+        for version_entry in fs::read_dir(id_entry.path())? {
+            let version_entry = version_entry?;
+            if !version_entry.file_type()?.is_file()
+                || version_entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    != Some("json")
+            {
+                return Err(RegistryError::InvalidRecord);
+            }
+            let record_bytes = read_bounded(&version_entry.path(), 1024 * 1024)?;
+            let record: RegistryRecord = serde_json::from_slice(&record_bytes)?;
+            if id_entry.file_name().to_string_lossy() != record.id
+                || version_entry
+                    .path()
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    != Some(record.version.to_string().as_str())
+            {
+                return Err(RegistryError::InvalidRecord);
+            }
+            let package_bytes = read_bounded(&root.join(&record.package_path), MAX_PACKAGE_BYTES)?;
+            verify_registry_package(&record, &package_bytes)?;
+            records.push(record);
+        }
+    }
+    records.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| right.version.cmp(&left.version))
+    });
+    Ok(RegistryCatalog { records })
+}
+
+/// Verify and install one signed registry record into the local extension directory.
+///
+/// # Errors
+/// Returns an error unless the record is indexed, signed, hash-valid, and installable.
+pub fn install_registry_package(
+    registry_root: impl AsRef<Path>,
+    install_root: impl AsRef<Path>,
+    id: &str,
+    version: &semver::Version,
+) -> Result<crate::InstallReceipt, RegistryError> {
+    let registry_root = registry_root.as_ref();
+    let catalog = load_registry(registry_root)?;
+    let record = catalog.find(id, version).ok_or(RegistryError::NotFound)?;
+    let package_path = registry_root.join(&record.package_path);
+    let package_bytes = read_bounded(&package_path, MAX_PACKAGE_BYTES)?;
+    verify_registry_package(record, &package_bytes)?;
+    crate::install_package(package_path, install_root).map_err(RegistryError::Install)
 }
 
 /// Validate, canonically encode, sign, and immutably publish an extension package.
@@ -201,6 +299,9 @@ pub enum RegistryError {
     /// Package input exceeds the safety limit.
     #[error("registry package exceeds its size limit")]
     TooLarge,
+    /// Requested extension version does not exist in the verified catalog.
+    #[error("registry package was not found")]
+    NotFound,
     /// Filesystem operation failed.
     #[error("registry filesystem operation failed")]
     Io(#[from] std::io::Error),
@@ -210,6 +311,9 @@ pub enum RegistryError {
     /// Record serialization failed.
     #[error("registry record serialization failed")]
     Json(#[from] serde_json::Error),
+    /// Verified package could not be installed.
+    #[error("registry package installation failed")]
+    Install(#[source] crate::DeveloperError),
 }
 
 fn signing_payload(record: &RegistryRecord) -> Vec<u8> {
@@ -257,6 +361,18 @@ fn temporary_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{}.tmp", std::process::id()));
     PathBuf::from(name)
+}
+
+fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, RegistryError> {
+    let maximum = u64::try_from(maximum).map_err(|_| RegistryError::TooLarge)?;
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(maximum + 1).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).map_or(true, |length| length > maximum) {
+        Err(RegistryError::TooLarge)
+    } else {
+        Ok(bytes)
+    }
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -374,5 +490,38 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn catalog_browses_latest_and_installs_only_verified_packages() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let source = directory.path().join("demo.superspace-extension");
+        fs::write(&source, package_bytes()).expect("source");
+        let registry = directory.path().join("registry");
+        let identity = PublisherIdentity::generate();
+        let record = publish_package(&source, &registry, &identity).expect("publish");
+        let catalog = load_registry(&registry).expect("catalog");
+        assert_eq!(catalog.latest(&record.id), Some(&record));
+        let receipt = install_registry_package(
+            &registry,
+            directory.path().join("installed"),
+            &record.id,
+            &record.version,
+        )
+        .expect("install");
+        assert_eq!(receipt.id, record.id);
+
+        let record_path = registry
+            .join("index")
+            .join(&record.id)
+            .join(format!("{}.json", record.version));
+        let mut forged: RegistryRecord =
+            serde_json::from_slice(&fs::read(&record_path).expect("record")).expect("decode");
+        forged.package_hash.replace_range(..2, "00");
+        fs::write(record_path, serde_json::to_vec(&forged).expect("encode")).expect("forge");
+        assert!(matches!(
+            load_registry(&registry),
+            Err(RegistryError::InvalidSignature)
+        ));
     }
 }

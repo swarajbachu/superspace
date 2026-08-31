@@ -4,23 +4,80 @@ interface host {
   record action {
     id: string,
     title: string,
+    shortcut: option<string>,
+  }
+
+  record list-item {
+    id: string,
+    title: string,
+    subtitle: option<string>,
+    icon: option<string>,
+    actions: list<action>,
+  }
+
+  record grid-item {
+    id: string,
+    title: string,
+    image: option<string>,
+    actions: list<action>,
+  }
+
+  record metadata-row {
+    label: string,
+    value: string,
+  }
+
+  variant form-field-kind {
+    text,
+    text-area,
+    checkbox,
+    select(list<string>),
+    password,
+  }
+
+  record form-field {
+    id: string,
+    label: string,
+    kind: form-field-kind,
+    required: bool,
+  }
+
+  record detail-view {
+    markdown: string,
+    metadata: list<metadata-row>,
+    actions: list<action>,
+  }
+
+  record form-view {
+    fields: list<form-field>,
+    submit: action,
+  }
+
+  record progress-view {
+    title: string,
+    fraction: option<f32>,
+    cancellable: bool,
   }
 
   variant view {
-    list(list<string>),
-    grid(list<string>),
-    detail(string),
-    markdown(string),
-    form(list<string>),
-    menu(list<action>),
-    progress(float32),
+    list-view(list<list-item>),
+    grid-view(list<grid-item>),
+    detail-page(detail-view),
+    markdown-view(string),
+    form-view(form-view),
+    action-menu(list<action>),
+    progress-view(progress-view),
   }
 
-  set-view: func(value: view);
-  navigate: func(command: string);
+  set-view: func(value: view) -> result<_, string>;
+  push-view: func(value: view) -> result<_, string>;
+  pop-view: func();
   clipboard-read: func() -> result<string, string>;
   clipboard-write: func(value: string) -> result<_, string>;
   fetch: func(origin: string, path: string) -> result<list<u8>, string>;
+  read-file: func(path: string) -> result<list<u8>, string>;
+  write-file: func(path: string, value: list<u8>) -> result<_, string>;
+  run-process: func(executable: string, arguments: list<string>) -> result<s32, string>;
 }
 
 world extension {

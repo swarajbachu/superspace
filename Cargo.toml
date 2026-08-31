@@ -52,6 +52,7 @@ tempfile = "3.22"
 tokio = { version = "1.47", features = ["io-util", "macros", "rt-multi-thread", "time"] }
 wasmparser = "0.239"
 wasmtime = { version = "36.0", default-features = false, features = ["component-model", "cranelift", "runtime"] }
+wit-parser = "0.236"
 gpui = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a" }
 gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a", features = ["wayland", "x11", "font-kit", "runtime_shaders"] }
 
