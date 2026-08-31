@@ -16,7 +16,8 @@ pub use model::{
 
 #[cfg(feature = "desktop")]
 use gpui::{
-    App, AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size,
+    App, AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions, px, size,
 };
 
 /// Start the headed Superspace application.
@@ -35,6 +36,9 @@ pub fn run() {
                 window_min_size: Some(size(px(640.0), px(440.0))),
                 titlebar: None,
                 window_background: WindowBackgroundAppearance::Blurred,
+                kind: WindowKind::PopUp,
+                is_resizable: false,
+                is_minimizable: false,
                 ..WindowOptions::default()
             },
             |window, cx| cx.new(|cx| shell::Palette::new(window, cx)),

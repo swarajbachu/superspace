@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity,
+    AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
-    Window, div, img, px,
+    Window, div, img, point, px,
 };
 use superspace_calculator::{Calculator, ResultValue};
 use superspace_core::LauncherPreferences;
@@ -379,14 +379,30 @@ impl Render for Palette {
         div()
             .id("superspace-palette")
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(colors.background)
             .text_color(colors.text)
             .border_1()
             .border_color(colors.border)
-            .rounded(px(16.0))
-            .shadow_xl()
+            .rounded(px(18.0))
+            .shadow(vec![
+                BoxShadow {
+                    color: colors.shadow,
+                    offset: point(px(0.0), px(16.0)),
+                    blur_radius: px(42.0),
+                    spread_radius: px(-8.0),
+                    inset: false,
+                },
+                BoxShadow {
+                    color: colors.highlight.opacity(0.32),
+                    offset: point(px(0.0), px(1.0)),
+                    blur_radius: px(0.0),
+                    spread_radius: px(0.0),
+                    inset: true,
+                },
+            ])
             .overflow_hidden()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
@@ -398,6 +414,7 @@ impl Render for Palette {
                     .items_center()
                     .border_b_1()
                     .border_color(colors.border)
+                    .bg(colors.surface)
                     .gap(px(12.0))
                     .child(
                         div()
@@ -407,6 +424,8 @@ impl Render for Palette {
                             .justify_center()
                             .rounded(px(8.0))
                             .bg(colors.tile)
+                            .border_1()
+                            .border_color(colors.highlight.opacity(0.42))
                             .text_size(px(15.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors.accent)
@@ -502,6 +521,15 @@ impl Render for Palette {
                             }),
                     ),
             )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(20.0))
+                    .right(px(20.0))
+                    .h(px(1.0))
+                    .bg(colors.highlight),
+            )
             .with_animation(
                 "palette-enter",
                 motion::ENTER.animation(),
@@ -534,6 +562,12 @@ fn result_row(
         .items_center()
         .gap(px(11.0))
         .rounded(px(9.0))
+        .border_1()
+        .border_color(if selected {
+            colors.selected_border
+        } else {
+            colors.border.opacity(0.0)
+        })
         .when(selected, |row| row.bg(colors.selected))
         .hover(move |row| {
             row.bg(if selected {
@@ -615,6 +649,12 @@ fn calculation_row(
         .items_center()
         .gap(px(14.0))
         .rounded(px(10.0))
+        .border_1()
+        .border_color(if selected {
+            colors.selected_border
+        } else {
+            colors.border.opacity(0.0)
+        })
         .when(selected, |row| row.bg(colors.selected))
         .hover(move |row| {
             row.bg(if selected {
@@ -642,6 +682,8 @@ fn calculation_row(
                 .justify_center()
                 .rounded(px(8.0))
                 .bg(colors.tile)
+                .border_1()
+                .border_color(colors.highlight.opacity(0.38))
                 .text_size(px(16.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors.accent)
@@ -708,6 +750,12 @@ fn action_row(
         .items_center()
         .gap(px(11.0))
         .rounded(px(9.0))
+        .border_1()
+        .border_color(if selected {
+            colors.selected_border
+        } else {
+            colors.border.opacity(0.0)
+        })
         .when(selected, |row| row.bg(colors.selected))
         .hover(move |row| {
             row.bg(if selected {
@@ -729,6 +777,8 @@ fn action_row(
                 .justify_center()
                 .rounded(px(7.0))
                 .bg(colors.tile)
+                .border_1()
+                .border_color(colors.highlight.opacity(0.32))
                 .text_size(px(13.0))
                 .text_color(colors.muted)
                 .child("↗"),
@@ -778,6 +828,8 @@ fn fallback_icon(label: String, colors: theme::Theme) -> AnyElement {
         .justify_center()
         .rounded(px(7.0))
         .bg(colors.tile)
+        .border_1()
+        .border_color(colors.highlight.opacity(0.34))
         .text_size(px(12.0))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(colors.text)
@@ -793,7 +845,7 @@ fn keycap(label: impl Into<String>, colors: theme::Theme) -> AnyElement {
         .items_center()
         .rounded(px(6.0))
         .border_1()
-        .border_color(colors.border)
+        .border_color(colors.highlight.opacity(0.44))
         .bg(colors.surface)
         .text_size(px(10.0))
         .font_weight(FontWeight::MEDIUM)
