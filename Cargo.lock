@@ -6286,8 +6286,10 @@ name = "superspace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "superspace-core",
  "superspace-platform",
+ "superspace-productivity",
  "superspace-ui",
 ]
 

@@ -12,8 +12,10 @@ desktop = ["superspace-ui/desktop"]
 
 [dependencies]
 anyhow.workspace = true
+serde_json.workspace = true
 superspace-core = { path = "../../crates/core" }
 superspace-platform = { path = "../../crates/platform" }
+superspace-productivity = { path = "../../crates/productivity" }
 superspace-ui = { path = "../../crates/ui" }
 
 [lints]

@@ -196,6 +196,22 @@ impl ProductivityStore {
             .optional()
             .map_err(Into::into)
     }
+
+    /// Find an item by stable identifier.
+    ///
+    /// # Errors
+    /// Returns database failures or malformed stored data.
+    pub fn get(&self, id: &str) -> Result<Option<Item>, ProductivityError> {
+        self.connection
+            .query_row(
+                "SELECT id, title, keyword, tags, kind, payload, favorite, updated_at_ms
+                 FROM productivity_items WHERE id = ?1",
+                [id],
+                decode_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
 }
 
 /// Expand an exact snippet keyword only when it is the final standalone token.
