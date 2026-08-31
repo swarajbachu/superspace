@@ -13,6 +13,7 @@ desktop = ["superspace-ui/desktop"]
 [dependencies]
 anyhow.workspace = true
 superspace-core = { path = "../../crates/core" }
+superspace-platform = { path = "../../crates/platform" }
 superspace-ui = { path = "../../crates/ui" }
 
 [lints]

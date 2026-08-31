@@ -5993,6 +5993,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "superspace-core",
+ "superspace-platform",
  "superspace-ui",
 ]
 
