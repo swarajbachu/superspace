@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use superspace_calculator::{CurrencyQuery, ExchangeRates};
 
 const FRESH_FOR_MS: i64 = 15 * 60 * 1_000;
+static CACHE_WRITE: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug)]
 pub(crate) struct Conversion {
@@ -48,7 +50,7 @@ struct CoinbaseRates {
 /// Resolve a current conversion, falling back to the most recent durable rate offline.
 pub(crate) fn convert(query: CurrencyQuery, data_root: &Path) -> Result<Conversion, String> {
     let cache_path = data_root.join("currency-rates.json");
-    let mut cache = read_cache(&cache_path);
+    let cache = read_cache(&cache_path);
     let key = format!("{}:{}", query.from, query.to);
     let now = now_millis();
     if let Some(rate) = cache.rates.get(&key)
@@ -64,17 +66,31 @@ pub(crate) fn convert(query: CurrencyQuery, data_root: &Path) -> Result<Conversi
                 observed_at_ms: now,
             };
             let conversion = apply_rate(query, &rate, false)?;
-            cache.rates.insert(key, rate);
-            if let Ok(encoded) = serde_json::to_vec_pretty(&cache) {
-                let _ = fs::create_dir_all(data_root);
-                let _ = fs::write(cache_path, encoded);
-            }
+            save_rate(data_root, &cache_path, key, rate);
             Ok(conversion)
         }
         Err(network_error) => cache
             .rates
             .get(&key)
             .map_or_else(|| Err(network_error), |rate| apply_rate(query, rate, true)),
+    }
+}
+
+fn save_rate(data_root: &Path, cache_path: &Path, key: String, rate: CachedRate) {
+    let Ok(_guard) = CACHE_WRITE.lock() else {
+        return;
+    };
+    let mut cache = read_cache(cache_path);
+    cache.rates.insert(key, rate);
+    let Ok(encoded) = serde_json::to_vec_pretty(&cache) else {
+        return;
+    };
+    if fs::create_dir_all(data_root).is_err() {
+        return;
+    }
+    let temporary = cache_path.with_extension(format!("{}.tmp", std::process::id()));
+    if fs::write(&temporary, encoded).is_ok() {
+        let _ = fs::rename(temporary, cache_path);
     }
 }
 

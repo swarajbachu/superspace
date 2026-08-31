@@ -52,7 +52,12 @@ impl ClipboardHistory {
                     subtitle: format!("{format} · {age}"),
                     kind: PaletteEntryKind::Clipboard,
                     icon: None,
-                    keywords: vec![format.to_owned(), "clipboard".into(), "history".into()],
+                    keywords: vec![
+                        format.to_owned(),
+                        "clipboard".into(),
+                        "history".into(),
+                        query.to_owned(),
+                    ],
                     preview: if pinned {
                         "Pinned clipboard item".into()
                     } else {

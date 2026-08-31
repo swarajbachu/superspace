@@ -33,7 +33,10 @@ impl MiniTools {
             .search(query, 100)
             .map_err(|error| error.to_string())?
         {
-            let (id, entry) = item_entry(&item);
+            let (id, mut entry) = item_entry(&item);
+            if !query.is_empty() {
+                entry.keywords.push(query.to_owned());
+            }
             entries.push(entry);
             self.items.insert(id, item);
         }
@@ -54,7 +57,8 @@ impl MiniTools {
             return Ok(None);
         };
         let arguments = fields.next().unwrap_or_default().trim().to_owned();
-        let (id, entry) = item_entry(&item);
+        let (id, mut entry) = item_entry(&item);
+        entry.keywords.push(input.trim().to_owned());
         self.items.insert(id.clone(), item);
         self.arguments.insert(id, arguments);
         Ok(Some(entry))
@@ -69,7 +73,13 @@ impl MiniTools {
                 subtitle: emoji.name.into(),
                 kind: PaletteEntryKind::Emoji,
                 icon: None,
-                keywords: emoji.keywords.iter().map(ToString::to_string).collect(),
+                keywords: emoji
+                    .keywords
+                    .iter()
+                    .copied()
+                    .chain([emoji.name])
+                    .map(str::to_owned)
+                    .collect(),
                 preview: format!("Copy {}", emoji.name),
                 frequency: 0,
                 favorite: false,
@@ -213,5 +223,8 @@ mod tests {
                 .iter()
                 .all(|entry| entry.actions[0].id == "copy-emoji")
         );
+        let mut model = crate::PaletteModel::new(entries);
+        model.set_query("heart");
+        assert!(model.results().next().is_some());
     }
 }

@@ -544,14 +544,15 @@ fn encode_paths(value: &ClipboardValue) -> Vec<u8> {
     let mut bytes = Vec::new();
     for path in paths {
         let path = path.to_string_lossy();
-        bytes.extend_from_slice(&path.len().to_le_bytes());
+        let length = u64::try_from(path.len()).unwrap_or(u64::MAX);
+        bytes.extend_from_slice(&length.to_le_bytes());
         bytes.extend_from_slice(path.as_bytes());
     }
     bytes
 }
 
 fn decode_paths(bytes: &[u8]) -> Result<ClipboardValue, SyncError> {
-    const WIDTH: usize = size_of::<usize>();
+    const WIDTH: usize = size_of::<u64>();
     let mut paths = Vec::new();
     let mut offset = 0;
     while offset < bytes.len() {
@@ -561,7 +562,8 @@ fn decode_paths(bytes: &[u8]) -> Result<ClipboardValue, SyncError> {
             .try_into()
             .map_err(|_| SyncError::InvalidFiles)?;
         offset += WIDTH;
-        let length = usize::from_le_bytes(length_bytes);
+        let length = usize::try_from(u64::from_le_bytes(length_bytes))
+            .map_err(|_| SyncError::InvalidFiles)?;
         let end = offset.checked_add(length).ok_or(SyncError::InvalidFiles)?;
         let path = std::str::from_utf8(bytes.get(offset..end).ok_or(SyncError::InvalidFiles)?)
             .map_err(|_| SyncError::InvalidFiles)?;

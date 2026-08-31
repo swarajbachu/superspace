@@ -50,6 +50,7 @@ pub struct Palette {
     clipboard: Option<ClipboardHistory>,
     mini_tools: Option<MiniTools>,
     currency_query: Option<CurrencyQuery>,
+    currency_input: Option<String>,
     currency_result: Option<Result<Conversion, String>>,
     theme_kind: theme::ThemeKind,
     preferences: LauncherPreferences,
@@ -143,6 +144,7 @@ impl Palette {
             clipboard,
             mini_tools,
             currency_query: None,
+            currency_input: None,
             currency_result: None,
             theme_kind: theme::ThemeKind::default(),
             preferences,
@@ -477,6 +479,7 @@ impl Palette {
             return;
         }
         self.currency_query = None;
+        self.currency_input = None;
         self.currency_result = None;
         let keyword_entry = self
             .mini_tools
@@ -525,7 +528,7 @@ impl Palette {
                 subtitle,
                 kind: PaletteEntryKind::File,
                 icon: None,
-                keywords: Vec::new(),
+                keywords: vec![query.clone()],
                 preview: format!("{} bytes", matched.size),
                 frequency: 0,
                 favorite: false,
@@ -558,10 +561,12 @@ impl Palette {
     fn refresh_currency(&mut self, cx: &mut Context<Self>) {
         let Some(query) = CurrencyQuery::parse(self.model.query()) else {
             self.currency_query = None;
+            self.currency_input = None;
             self.currency_result = None;
             self.model.replace_entries(Vec::new());
             return;
         };
+        self.currency_input = Some(self.model.query().to_owned());
         if self.currency_query.as_ref() == Some(&query) {
             self.show_currency_result();
             return;
@@ -569,8 +574,10 @@ impl Palette {
 
         self.currency_query = Some(query.clone());
         self.currency_result = None;
-        self.model
-            .replace_entries(vec![currency_loading_entry(&query)]);
+        self.model.replace_entries(vec![currency_loading_entry(
+            &query,
+            self.currency_input.as_deref().unwrap_or_default(),
+        )]);
         let root = data_root();
         let requested_query = query.clone();
         cx.spawn(async move |this, cx| {
@@ -594,10 +601,18 @@ impl Palette {
             None => self
                 .currency_query
                 .as_ref()
-                .map(currency_loading_entry)
+                .map(|query| {
+                    currency_loading_entry(
+                        query,
+                        self.currency_input.as_deref().unwrap_or_default(),
+                    )
+                })
                 .into_iter()
                 .collect(),
-            Some(Ok(result)) => vec![currency_result_entry(result)],
+            Some(Ok(result)) => vec![currency_result_entry(
+                result,
+                self.currency_input.as_deref().unwrap_or_default(),
+            )],
             Some(Err(error)) => {
                 self.notice = Some(error.clone());
                 Vec::new()
@@ -1072,14 +1087,14 @@ fn is_renderable_image(path: &Path) -> bool {
         })
 }
 
-fn currency_loading_entry(query: &CurrencyQuery) -> PaletteEntry {
+fn currency_loading_entry(query: &CurrencyQuery, input: &str) -> PaletteEntry {
     PaletteEntry {
         id: "currency:loading".into(),
         title: format!("Fetching {} → {}…", query.from, query.to),
         subtitle: "Checking the latest exchange rate".into(),
         kind: PaletteEntryKind::Calculation,
         icon: None,
-        keywords: Vec::new(),
+        keywords: vec![input.to_owned()],
         preview: "Live currency conversion".into(),
         frequency: 100,
         favorite: true,
@@ -1087,7 +1102,7 @@ fn currency_loading_entry(query: &CurrencyQuery) -> PaletteEntry {
     }
 }
 
-fn currency_result_entry(result: &Conversion) -> PaletteEntry {
+fn currency_result_entry(result: &Conversion, input: &str) -> PaletteEntry {
     let value = result.display_value();
     let source = if result.cached {
         "Cached rate"
@@ -1104,7 +1119,11 @@ fn currency_result_entry(result: &Conversion) -> PaletteEntry {
         subtitle: format!("{} {} · {observed}", result.query.amount, result.query.from),
         kind: PaletteEntryKind::Calculation,
         icon: None,
-        keywords: vec![result.query.from.to_string(), result.query.to.to_string()],
+        keywords: vec![
+            input.to_owned(),
+            result.query.from.to_string(),
+            result.query.to.to_string(),
+        ],
         preview: "Press Enter to copy the converted amount".into(),
         frequency: u32::MAX,
         favorite: true,
@@ -1262,5 +1281,33 @@ fn default_data_root() -> PathBuf {
             },
             |root| Path::new(&root).join("superspace"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal::Decimal;
+
+    use super::{currency_loading_entry, currency_result_entry};
+    use crate::{PaletteModel, currency::Conversion};
+    use superspace_calculator::CurrencyQuery;
+
+    #[test]
+    fn currency_rows_remain_visible_for_the_complete_typed_query() {
+        let input = "1,250.50 usd to EUR";
+        let query = CurrencyQuery::parse(input).expect("currency query");
+        let mut loading = PaletteModel::new(vec![currency_loading_entry(&query, input)]);
+        loading.set_query(input);
+        assert!(loading.results().next().is_some());
+
+        let conversion = Conversion {
+            query,
+            value: Decimal::new(1_154_250, 3),
+            observed_at_ms: 42,
+            cached: false,
+        };
+        let mut result = PaletteModel::new(vec![currency_result_entry(&conversion, input)]);
+        result.set_query(input);
+        assert!(result.results().next().is_some());
     }
 }
