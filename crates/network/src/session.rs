@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use quinn::{Connection, SendStream};
 use superspace_protocol::{
-    ClipboardEvent, DeviceId, DeviceInfo, Message, PROTOCOL_VERSION, TransferManifest,
+    ClipboardEvent, ContentHash, DeviceId, DeviceInfo, Message, PROTOCOL_VERSION, TransferManifest,
 };
 use thiserror::Error;
 
@@ -97,6 +97,50 @@ pub struct ClipboardOffer {
     response: SendStream,
 }
 
+/// Accepted request routed from the first message on a peer-created QUIC stream.
+pub enum IncomingPeerRequest {
+    /// Clipboard event awaiting durable application and acknowledgement.
+    Clipboard(ClipboardOffer),
+    /// Resumable request for a content-addressed clipboard blob.
+    Blob(BlobRequest),
+}
+
+/// Accepted blob request with the response stream needed to serve it.
+pub struct BlobRequest {
+    hash: ContentHash,
+    offset: u64,
+    response: SendStream,
+}
+
+impl BlobRequest {
+    /// Stream the requested blob from a content-addressed root.
+    ///
+    /// # Errors
+    /// Returns invalid offset, source I/O, framing, or stream failures.
+    pub async fn serve(mut self, blob_root: impl AsRef<Path>) -> Result<(), BlobSessionError> {
+        let path = blob_root.as_ref().join(self.hash.to_hex());
+        loop {
+            let chunk = read_blob_chunk(&path, self.hash, self.offset, MAX_CHUNK_SIZE)?;
+            let complete = chunk.complete;
+            self.offset = self
+                .offset
+                .checked_add(
+                    u64::try_from(chunk.bytes.len())
+                        .map_err(|_| BlobSessionError::UnexpectedMessage)?,
+                )
+                .ok_or(BlobSessionError::UnexpectedMessage)?;
+            write_frame(&mut self.response, &Message::BlobChunk(chunk)).await?;
+            if complete {
+                break;
+            }
+        }
+        self.response
+            .finish()
+            .map_err(|_| BlobSessionError::Stream)?;
+        Ok(())
+    }
+}
+
 impl ClipboardOffer {
     /// Acknowledge durable processing and close the response stream.
     ///
@@ -122,14 +166,49 @@ impl ClipboardOffer {
 pub async fn receive_clipboard_offer(
     connection: &Connection,
 ) -> Result<ClipboardOffer, PeerSessionError> {
+    match receive_peer_request(connection).await? {
+        IncomingPeerRequest::Clipboard(offer) => Ok(offer),
+        IncomingPeerRequest::Blob(_) => Err(PeerSessionError::UnexpectedMessage),
+    }
+}
+
+/// Accept and route the next clipboard-control or blob request stream.
+///
+/// # Errors
+/// Returns a framing, stream, or unsupported first-message failure.
+pub async fn receive_peer_request(
+    connection: &Connection,
+) -> Result<IncomingPeerRequest, IncomingRequestError> {
     let (response, mut receive) = connection
         .accept_bi()
         .await
-        .map_err(|_| PeerSessionError::Stream)?;
-    let Message::Clipboard(event) = read_frame(&mut receive).await? else {
-        return Err(PeerSessionError::UnexpectedMessage);
-    };
-    Ok(ClipboardOffer { event, response })
+        .map_err(|_| IncomingRequestError::Stream)?;
+    match read_frame(&mut receive).await? {
+        Message::Clipboard(event) => Ok(IncomingPeerRequest::Clipboard(ClipboardOffer {
+            event,
+            response,
+        })),
+        Message::BlobRequest { hash, offset } => Ok(IncomingPeerRequest::Blob(BlobRequest {
+            hash,
+            offset,
+            response,
+        })),
+        _ => Err(IncomingRequestError::UnexpectedMessage),
+    }
+}
+
+/// First-message routing failures on an authenticated peer stream.
+#[derive(Debug, Error)]
+pub enum IncomingRequestError {
+    /// Protocol framing failed.
+    #[error("incoming peer request frame failed")]
+    Frame(#[from] FrameError),
+    /// QUIC stream could not be accepted.
+    #[error("incoming peer request stream failed")]
+    Stream,
+    /// Stream began with a message owned by another protocol dispatcher.
+    #[error("incoming peer request has an unsupported message")]
+    UnexpectedMessage,
 }
 
 fn validate_local_info(info: &DeviceInfo) -> Result<(), PeerSessionError> {
@@ -166,6 +245,9 @@ fn validate_info(info: &DeviceInfo) -> Result<(), PeerSessionError> {
 /// Authenticated peer control-session failures.
 #[derive(Debug, Error)]
 pub enum PeerSessionError {
+    /// Incoming stream routing failed.
+    #[error(transparent)]
+    Incoming(#[from] IncomingRequestError),
     /// Protocol framing failed.
     #[error("peer session protocol frame failed")]
     Frame(#[from] FrameError),
@@ -265,35 +347,18 @@ pub async fn serve_blob(
     connection: &Connection,
     blob_root: impl AsRef<Path>,
 ) -> Result<(), BlobSessionError> {
-    let (mut send, mut receive) = connection
-        .accept_bi()
-        .await
-        .map_err(|_| BlobSessionError::Stream)?;
-    let Message::BlobRequest { hash, mut offset } = read_frame(&mut receive).await? else {
-        return Err(BlobSessionError::UnexpectedMessage);
-    };
-    let path = blob_root.as_ref().join(hash.to_hex());
-    loop {
-        let chunk = read_blob_chunk(&path, hash, offset, MAX_CHUNK_SIZE)?;
-        let complete = chunk.complete;
-        offset = offset
-            .checked_add(
-                u64::try_from(chunk.bytes.len())
-                    .map_err(|_| BlobSessionError::UnexpectedMessage)?,
-            )
-            .ok_or(BlobSessionError::UnexpectedMessage)?;
-        write_frame(&mut send, &Message::BlobChunk(chunk)).await?;
-        if complete {
-            break;
-        }
+    match receive_peer_request(connection).await? {
+        IncomingPeerRequest::Blob(request) => request.serve(blob_root).await,
+        IncomingPeerRequest::Clipboard(_) => Err(BlobSessionError::UnexpectedMessage),
     }
-    send.finish().map_err(|_| BlobSessionError::Stream)?;
-    Ok(())
 }
 
 /// Blob request/response session failures.
 #[derive(Debug, Error)]
 pub enum BlobSessionError {
+    /// Incoming stream routing failed.
+    #[error(transparent)]
+    Incoming(#[from] IncomingRequestError),
     /// Protocol framing failed.
     #[error("clipboard blob protocol frame failed")]
     Frame(#[from] FrameError),

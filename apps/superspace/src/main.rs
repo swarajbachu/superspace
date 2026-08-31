@@ -198,15 +198,15 @@ async fn clipboard_connection_loop(
                     }
                     outgoing = None;
                 }
-                offer = superspace_network::receive_clipboard_offer(connection) => {
-                    apply_clipboard_offer(&mut sync, offer?, now_u64()).await?;
+                request = superspace_network::receive_peer_request(connection) => {
+                    handle_peer_request(&mut sync, connection, root, request?, now_u64()).await?;
                 }
                 _ = interval.tick() => {}
             }
         } else {
             tokio::select! {
-                offer = superspace_network::receive_clipboard_offer(connection) => {
-                    apply_clipboard_offer(&mut sync, offer?, now_u64()).await?;
+                request = superspace_network::receive_peer_request(connection) => {
+                    handle_peer_request(&mut sync, connection, root, request?, now_u64()).await?;
                 }
                 _ = interval.tick() => {
                     let now = now_u64();
@@ -227,18 +227,42 @@ async fn clipboard_connection_loop(
     }
 }
 
-async fn apply_clipboard_offer(
+async fn handle_peer_request(
     sync: &mut superspace_sync::ClipboardSync<superspace_platform::NativeClipboard>,
-    offer: superspace_network::ClipboardOffer,
+    connection: &quinn::Connection,
+    root: &Path,
+    request: superspace_network::IncomingPeerRequest,
     now: u64,
 ) -> Result<()> {
-    let outcome = sync.receive(&offer.event, now)?;
-    if outcome.should_acknowledge() {
-        offer.acknowledge().await?;
-        Ok(())
-    } else {
-        bail!("peer offered non-inline clipboard content; blob transfer dispatch is not active yet")
+    match request {
+        superspace_network::IncomingPeerRequest::Blob(request) => {
+            request.serve(root.join("clipboard-blobs")).await?;
+        }
+        superspace_network::IncomingPeerRequest::Clipboard(offer) => {
+            let outcome = sync.receive(&offer.event, now)?;
+            let outcome = match outcome {
+                superspace_sync::SyncOutcome::NeedsBlob { hash, size } => {
+                    let receiver = superspace_network::BlobReceiver::begin(
+                        root.join("clipboard-blobs"),
+                        hash,
+                        size,
+                    )?;
+                    let path = superspace_network::request_blob(connection, receiver).await?;
+                    let bytes = std::fs::read(path)?;
+                    sync.receive_blob(&offer.event, &bytes, now)?
+                }
+                superspace_sync::SyncOutcome::NeedsTransfer { .. } => {
+                    bail!("peer offered files; transfer dispatch is not active yet");
+                }
+                ready => ready,
+            };
+            if !outcome.should_acknowledge() {
+                bail!("clipboard event did not reach a durable terminal state");
+            }
+            offer.acknowledge().await?;
+        }
     }
+    Ok(())
 }
 
 fn pair_device(root: &Path, listen: bool, address: SocketAddr, name: String) -> Result<()> {

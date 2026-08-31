@@ -24,8 +24,9 @@ pub use pairing_session::{
 };
 pub use replication::{ApplyDecision, PendingEvent, ReplicationError, ReplicationLedger};
 pub use session::{
-    BlobSessionError, ClipboardOffer, PeerSessionError, TransferCancellation, TransferSessionError,
-    exchange_hello_incoming, exchange_hello_outgoing, offer_clipboard, receive_clipboard_offer,
+    BlobRequest, BlobSessionError, ClipboardOffer, IncomingPeerRequest, IncomingRequestError,
+    PeerSessionError, TransferCancellation, TransferSessionError, exchange_hello_incoming,
+    exchange_hello_outgoing, offer_clipboard, receive_clipboard_offer, receive_peer_request,
     receive_transfer, receive_transfer_with_progress, request_blob, send_transfer,
     send_transfer_with_progress, serve_blob,
 };
