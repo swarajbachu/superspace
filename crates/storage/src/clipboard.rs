@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Clipboard representation stored in history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +70,8 @@ pub struct ClipboardEntry {
     pub created_at: i64,
     /// Pin time in Unix milliseconds.
     pub pinned_at: Option<i64>,
+    /// Whether content should be concealed and excluded from automatic sync.
+    pub sensitive: bool,
 }
 
 /// History query with optional kind restriction.
@@ -79,6 +81,8 @@ pub struct ClipboardQuery<'a> {
     pub text: &'a str,
     /// Restrict results to one representation.
     pub kind: Option<ClipboardKind>,
+    /// Reveal entries marked sensitive. Defaults to false.
+    pub include_sensitive: bool,
     /// Maximum rows returned.
     pub limit: usize,
 }
@@ -185,7 +189,15 @@ impl ClipboardStore {
                  COMMIT;",
             )?;
         }
-        debug_assert_eq!(SCHEMA_VERSION, 1);
+        if current < 2 {
+            connection.execute_batch(
+                "BEGIN;
+                 ALTER TABLE clipboard_items ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 2;
+                 COMMIT;",
+            )?;
+        }
+        debug_assert_eq!(SCHEMA_VERSION, 2);
         Ok(())
     }
 
@@ -200,8 +212,9 @@ impl ClipboardStore {
         }
         let changed = self.connection.execute(
             "INSERT OR IGNORE INTO clipboard_items
-             (id, kind, text_content, blob_hash, source_application, source_device, created_at, pinned_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, kind, text_content, blob_hash, source_application, source_device, created_at,
+              pinned_at, sensitive)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 entry.id.to_string(),
                 entry.kind.as_str(),
@@ -211,6 +224,7 @@ impl ClipboardStore {
                 entry.source.device_id.map(|id| id.to_string()),
                 entry.created_at,
                 entry.pinned_at,
+                entry.sensitive,
             ],
         )?;
         Ok(changed == 1)
@@ -225,9 +239,9 @@ impl ClipboardStore {
         let limit = i64::try_from(query.limit.clamp(1, 1_000)).unwrap_or(1_000);
         let normalized = query.text.trim();
         if normalized.chars().count() >= 3 {
-            self.query_fts(normalized, query.kind, limit)
+            self.query_fts(normalized, query.kind, query.include_sensitive, limit)
         } else {
-            self.query_recent(normalized, query.kind, limit)
+            self.query_recent(normalized, query.kind, query.include_sensitive, limit)
         }
     }
 
@@ -235,19 +249,22 @@ impl ClipboardStore {
         &self,
         text: &str,
         kind: Option<ClipboardKind>,
+        include_sensitive: bool,
         limit: i64,
     ) -> Result<Vec<ClipboardEntry>, StorageError> {
         let mut statement = self.connection.prepare(
             "SELECT i.id, i.kind, i.text_content, i.blob_hash, i.source_application,
-                    i.source_device, i.created_at, i.pinned_at
+                    i.source_device, i.created_at, i.pinned_at, i.sensitive
              FROM clipboard_search s JOIN clipboard_items i ON i.sequence = s.rowid
              WHERE clipboard_search MATCH ?1 AND (?2 IS NULL OR i.kind = ?2)
-             ORDER BY i.pinned_at IS NULL, i.pinned_at ASC, i.created_at DESC LIMIT ?3",
+               AND (?3 OR NOT i.sensitive)
+             ORDER BY i.pinned_at IS NULL, i.pinned_at ASC, i.created_at DESC LIMIT ?4",
         )?;
         Self::collect(statement.query_map(
             params![
                 format!("\"{}\"", text.replace('"', "\"\"")),
                 kind.map(ClipboardKind::as_str),
+                include_sensitive,
                 limit
             ],
             Self::row,
@@ -258,19 +275,26 @@ impl ClipboardStore {
         &self,
         text: &str,
         kind: Option<ClipboardKind>,
+        include_sensitive: bool,
         limit: i64,
     ) -> Result<Vec<ClipboardEntry>, StorageError> {
         let pattern = format!("%{}%", text.replace('%', "\\%").replace('_', "\\_"));
         let mut statement = self.connection.prepare(
             "SELECT id, kind, text_content, blob_hash, source_application, source_device,
-                    created_at, pinned_at
+                    created_at, pinned_at, sensitive
              FROM clipboard_items
              WHERE (?1 = '%%' OR text_content LIKE ?1 ESCAPE '\\')
                AND (?2 IS NULL OR kind = ?2)
-             ORDER BY pinned_at IS NULL, pinned_at ASC, created_at DESC LIMIT ?3",
+               AND (?3 OR NOT sensitive)
+             ORDER BY pinned_at IS NULL, pinned_at ASC, created_at DESC LIMIT ?4",
         )?;
         Self::collect(statement.query_map(
-            params![pattern, kind.map(ClipboardKind::as_str), limit],
+            params![
+                pattern,
+                kind.map(ClipboardKind::as_str),
+                include_sensitive,
+                limit
+            ],
             Self::row,
         )?)
     }
@@ -309,6 +333,7 @@ impl ClipboardStore {
             },
             created_at: row.get(6)?,
             pinned_at: row.get(7)?,
+            sensitive: row.get(8)?,
         })
     }
 
@@ -395,6 +420,7 @@ mod tests {
             source: ClipboardSource::default(),
             created_at,
             pinned_at: None,
+            sensitive: false,
         }
     }
 
@@ -408,6 +434,7 @@ mod tests {
             .query(&ClipboardQuery {
                 text: "cross",
                 kind: None,
+                include_sensitive: false,
                 limit: 20,
             })
             .expect("query");
@@ -427,6 +454,7 @@ mod tests {
             .query(&ClipboardQuery {
                 text: "",
                 kind: None,
+                include_sensitive: false,
                 limit: 20,
             })
             .expect("query");
@@ -445,6 +473,7 @@ mod tests {
             .query(&ClipboardQuery {
                 text: "%",
                 kind: None,
+                include_sensitive: false,
                 limit: 20,
             })
             .expect("query");
@@ -461,5 +490,35 @@ mod tests {
             store.insert(&entry),
             Err(StorageError::InvalidEntry)
         ));
+    }
+
+    #[test]
+    fn sensitive_entries_require_explicit_reveal() {
+        let store = ClipboardStore::memory().expect("open store");
+        let mut secret = text("correct horse battery staple", 1);
+        secret.sensitive = true;
+        store.insert(&secret).expect("insert secret");
+        assert!(
+            store
+                .query(&ClipboardQuery {
+                    text: "horse",
+                    kind: None,
+                    include_sensitive: false,
+                    limit: 20,
+                })
+                .expect("concealed query")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .query(&ClipboardQuery {
+                    text: "horse",
+                    kind: None,
+                    include_sensitive: true,
+                    limit: 20,
+                })
+                .expect("revealed query"),
+            [secret]
+        );
     }
 }

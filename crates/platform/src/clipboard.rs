@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -8,6 +9,20 @@ use thiserror::Error;
 pub enum ClipboardValue {
     /// UTF-8 plain text.
     Text(String),
+    /// HTML fragment paired with its searchable plain-text representation.
+    Html {
+        /// Text used for search and applications that do not accept HTML.
+        plain: String,
+        /// UTF-8 HTML fragment.
+        html: String,
+    },
+    /// Rich Text Format paired with its searchable plain-text representation.
+    Rtf {
+        /// Text used for search and applications that do not accept RTF.
+        plain: String,
+        /// RTF document text.
+        rtf: String,
+    },
     /// Unpremultiplied RGBA pixels in row-major order.
     Image {
         /// Pixel width.
@@ -33,6 +48,16 @@ impl ClipboardValue {
             Self::Text(text) if !text.is_empty() => {
                 hasher.update(b"text\0");
                 hasher.update(text.as_bytes());
+            }
+            Self::Html { plain, html } if !plain.is_empty() && !html.is_empty() => {
+                hasher.update(b"html\0");
+                hash_field(&mut hasher, plain.as_bytes());
+                hash_field(&mut hasher, html.as_bytes());
+            }
+            Self::Rtf { plain, rtf } if !plain.is_empty() && !rtf.is_empty() => {
+                hasher.update(b"rtf\0");
+                hash_field(&mut hasher, plain.as_bytes());
+                hash_field(&mut hasher, rtf.as_bytes());
             }
             Self::Image {
                 width,
@@ -122,6 +147,10 @@ impl ClipboardBackend for NativeClipboard {
                 .inner
                 .set_text(text)
                 .map_err(|_| ClipboardError::Unavailable),
+            ClipboardValue::Html { plain, .. } | ClipboardValue::Rtf { plain, .. } => self
+                .inner
+                .set_text(plain)
+                .map_err(|_| ClipboardError::Unavailable),
             ClipboardValue::Image {
                 width,
                 height,
@@ -141,6 +170,11 @@ impl ClipboardBackend for NativeClipboard {
     }
 }
 
+fn hash_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&bytes.len().to_le_bytes());
+    hasher.update(bytes);
+}
+
 /// A newly observed local clipboard value and its stable digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardObservation {
@@ -148,6 +182,60 @@ pub struct ClipboardObservation {
     pub value: ClipboardValue,
     /// Digest used for deduplication and network loop prevention.
     pub digest: blake3::Hash,
+}
+
+/// Desktop context accompanying a physical clipboard change.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClipboardContext {
+    /// Bundle ID or desktop-file ID of the foreground source application.
+    pub application_id: Option<String>,
+    /// Sensitive marker supplied by an OS integration or explicit user action.
+    pub sensitive: bool,
+}
+
+/// Privacy decision made before history persistence or network replication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureDisposition {
+    /// Drop the event entirely.
+    Exclude,
+    /// Store normally and permit configured synchronization.
+    Normal,
+    /// Store concealed locally and do not automatically synchronize.
+    Sensitive,
+}
+
+/// User-controlled clipboard privacy policy.
+#[derive(Clone, Debug, Default)]
+pub struct ClipboardCapturePolicy {
+    excluded_applications: HashSet<String>,
+}
+
+impl ClipboardCapturePolicy {
+    /// Construct a case-insensitive excluded-application set.
+    #[must_use]
+    pub fn new(excluded_applications: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            excluded_applications: excluded_applications
+                .into_iter()
+                .map(|application| application.to_lowercase())
+                .collect(),
+        }
+    }
+
+    /// Decide whether content may enter history or automatic synchronization.
+    #[must_use]
+    pub fn assess(&self, context: &ClipboardContext) -> CaptureDisposition {
+        if context.application_id.as_ref().is_some_and(|application| {
+            self.excluded_applications
+                .contains(&application.to_lowercase())
+        }) {
+            CaptureDisposition::Exclude
+        } else if context.sensitive {
+            CaptureDisposition::Sensitive
+        } else {
+            CaptureDisposition::Normal
+        }
+    }
 }
 
 /// Edge-triggered clipboard monitor with remote-application loop suppression.
@@ -289,5 +377,42 @@ mod tests {
         .digest()
         .expect("image");
         assert_ne!(text, image);
+        let html = ClipboardValue::Html {
+            plain: "same".into(),
+            html: "<b>same</b>".into(),
+        }
+        .digest()
+        .expect("html");
+        let rtf = ClipboardValue::Rtf {
+            plain: "same".into(),
+            rtf: r"{\rtf1 same}".into(),
+        }
+        .digest()
+        .expect("rtf");
+        assert_ne!(text, html);
+        assert_ne!(html, rtf);
+    }
+
+    #[test]
+    fn privacy_policy_excludes_sources_and_preserves_sensitive_markers() {
+        let policy = ClipboardCapturePolicy::new(["com.password.Manager".into()]);
+        assert_eq!(
+            policy.assess(&ClipboardContext {
+                application_id: Some("COM.PASSWORD.MANAGER".into()),
+                sensitive: false,
+            }),
+            CaptureDisposition::Exclude
+        );
+        assert_eq!(
+            policy.assess(&ClipboardContext {
+                application_id: Some("dev.editor".into()),
+                sensitive: true,
+            }),
+            CaptureDisposition::Sensitive
+        );
+        assert_eq!(
+            policy.assess(&ClipboardContext::default()),
+            CaptureDisposition::Normal
+        );
     }
 }

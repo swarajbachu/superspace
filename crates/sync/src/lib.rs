@@ -4,6 +4,7 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use superspace_network::{ApplyDecision, ReplicationError, ReplicationLedger};
+use superspace_platform::{CaptureDisposition, ClipboardCapturePolicy, ClipboardContext};
 use superspace_platform::{ClipboardBackend, ClipboardError, ClipboardMonitor, ClipboardValue};
 use superspace_protocol::{
     ClipboardContent, ClipboardEvent, ClipboardFormat, ContentHash, DeviceId, TransferId,
@@ -58,15 +59,52 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
         peers: impl IntoIterator<Item = DeviceId>,
         expires_at: i64,
     ) -> Result<Option<ClipboardEvent>, SyncError> {
+        self.poll_local_with_context(
+            now_millis,
+            peers,
+            expires_at,
+            &ClipboardCapturePolicy::default(),
+            &ClipboardContext::default(),
+        )
+    }
+
+    /// Capture using foreground-application exclusion and sensitive-content policy.
+    ///
+    /// Excluded copies never enter history. Sensitive copies are concealed in local history and
+    /// deliberately omitted from the peer replication ledger.
+    ///
+    /// # Errors
+    /// Returns platform, encoding, storage, or replication failures.
+    pub fn poll_local_with_context(
+        &mut self,
+        now_millis: u64,
+        peers: impl IntoIterator<Item = DeviceId>,
+        expires_at: i64,
+        policy: &ClipboardCapturePolicy,
+        context: &ClipboardContext,
+    ) -> Result<Option<ClipboardEvent>, SyncError> {
         let Some(observation) = self.monitor.poll()? else {
             return Ok(None);
         };
+        if policy.assess(context) == CaptureDisposition::Exclude {
+            return Ok(None);
+        }
         if matches!(observation.value, ClipboardValue::Files(_)) {
             return Err(SyncError::FilesRequireTransfer);
         }
         let encoded = encode_value(&observation.value)?;
         let event = self.local_event(now_millis, &encoded);
-        self.persist(&event, &encoded.bytes, None)?;
+        let sensitive = policy.assess(context) == CaptureDisposition::Sensitive;
+        self.persist(
+            &event,
+            &encoded.bytes,
+            Some(&observation.value),
+            context.application_id.as_deref(),
+            sensitive,
+        )?;
+        if sensitive {
+            return Ok(None);
+        }
         self.ledger.record_local(&event, peers, expires_at)?;
         Ok(Some(event))
     }
@@ -94,7 +132,7 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
             format: ClipboardFormat::Files,
             content: ClipboardContent::Transfer { transfer_id },
         };
-        self.persist(&event, &bytes, None)?;
+        self.persist(&event, &bytes, None, None, false)?;
         self.ledger.record_local(&event, peers, expires_at)?;
         Ok(event)
     }
@@ -225,12 +263,12 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
             }
             ApplyDecision::Superseded => {
                 self.ledger.receive(event, now_millis);
-                self.persist(event, persisted_bytes, Some(value))?;
+                self.persist(event, persisted_bytes, Some(value), None, false)?;
                 Ok(SyncOutcome::Superseded)
             }
             ApplyDecision::Apply => {
                 self.monitor.apply_remote(value)?;
-                self.persist(event, persisted_bytes, Some(value))?;
+                self.persist(event, persisted_bytes, Some(value), None, false)?;
                 debug_assert_eq!(self.ledger.receive(event, now_millis), ApplyDecision::Apply);
                 Ok(SyncOutcome::Applied)
             }
@@ -242,22 +280,35 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
         event: &ClipboardEvent,
         bytes: &[u8],
         decoded: Option<&ClipboardValue>,
+        source_application: Option<&str>,
+        sensitive: bool,
     ) -> Result<(), SyncError> {
         let (kind, text, blob_hash) = match event.format {
-            ClipboardFormat::Text | ClipboardFormat::Html | ClipboardFormat::Rtf => {
+            ClipboardFormat::Text => {
                 let text = match decoded {
                     Some(ClipboardValue::Text(text)) => text.clone(),
                     _ => std::str::from_utf8(bytes)
                         .map_err(|_| SyncError::InvalidText)?
                         .to_owned(),
                 };
-                let kind = match event.format {
-                    ClipboardFormat::Text => ClipboardKind::Text,
-                    ClipboardFormat::Html => ClipboardKind::Html,
-                    ClipboardFormat::Rtf => ClipboardKind::Rtf,
-                    _ => unreachable!(),
+                (ClipboardKind::Text, Some(text), None)
+            }
+            ClipboardFormat::Html | ClipboardFormat::Rtf => {
+                let value = decoded
+                    .cloned()
+                    .map_or_else(|| decode_value(event.format, bytes), Ok)?;
+                let (ClipboardValue::Html { plain: text, .. }
+                | ClipboardValue::Rtf { plain: text, .. }) = value
+                else {
+                    return Err(SyncError::UnexpectedContent);
                 };
-                (kind, Some(text), None)
+                let kind = if event.format == ClipboardFormat::Html {
+                    ClipboardKind::Html
+                } else {
+                    ClipboardKind::Rtf
+                };
+                let hash = self.blobs.put(bytes)?;
+                (kind, Some(text), Some(hash.as_str().to_owned()))
             }
             ClipboardFormat::Png => {
                 let hash = self.blobs.put(bytes)?;
@@ -274,11 +325,12 @@ impl<B: ClipboardBackend> ClipboardSync<B> {
             text,
             blob_hash,
             source: ClipboardSource {
-                application_id: None,
+                application_id: source_application.map(str::to_owned),
                 device_id: (event.origin != self.local_device).then_some(event.origin),
             },
             created_at: i64::try_from(event.timestamp.physical_millis).unwrap_or(i64::MAX),
             pinned_at: None,
+            sensitive,
         })?;
         Ok(())
     }
@@ -326,6 +378,14 @@ fn encode_value(value: &ClipboardValue) -> Result<EncodedValue, SyncError> {
             format: ClipboardFormat::Text,
             bytes: text.as_bytes().to_vec(),
         }),
+        ClipboardValue::Html { plain, html } => Ok(EncodedValue {
+            format: ClipboardFormat::Html,
+            bytes: encode_rich(plain, html)?,
+        }),
+        ClipboardValue::Rtf { plain, rtf } => Ok(EncodedValue {
+            format: ClipboardFormat::Rtf,
+            bytes: encode_rich(plain, rtf)?,
+        }),
         ClipboardValue::Image {
             width,
             height,
@@ -355,16 +415,56 @@ fn encode_value(value: &ClipboardValue) -> Result<EncodedValue, SyncError> {
 
 fn decode_value(format: ClipboardFormat, bytes: &[u8]) -> Result<ClipboardValue, SyncError> {
     match format {
-        ClipboardFormat::Text | ClipboardFormat::Html | ClipboardFormat::Rtf => {
+        ClipboardFormat::Text => {
             let text = std::str::from_utf8(bytes).map_err(|_| SyncError::InvalidText)?;
             if text.is_empty() {
                 return Err(SyncError::InvalidText);
             }
             Ok(ClipboardValue::Text(text.to_owned()))
         }
+        ClipboardFormat::Html => {
+            let (plain, rich) = decode_rich(bytes)?;
+            Ok(ClipboardValue::Html { plain, html: rich })
+        }
+        ClipboardFormat::Rtf => {
+            let (plain, rich) = decode_rich(bytes)?;
+            Ok(ClipboardValue::Rtf { plain, rtf: rich })
+        }
         ClipboardFormat::Png => decode_png(bytes),
         ClipboardFormat::Files => Err(SyncError::UnexpectedContent),
     }
+}
+
+fn encode_rich(plain: &str, rich: &str) -> Result<Vec<u8>, SyncError> {
+    if plain.is_empty() || rich.is_empty() {
+        return Err(SyncError::InvalidText);
+    }
+    let plain_length = u32::try_from(plain.len()).map_err(|_| SyncError::TextTooLarge)?;
+    let mut bytes = Vec::with_capacity(4 + plain.len() + rich.len());
+    bytes.extend_from_slice(&plain_length.to_le_bytes());
+    bytes.extend_from_slice(plain.as_bytes());
+    bytes.extend_from_slice(rich.as_bytes());
+    Ok(bytes)
+}
+
+fn decode_rich(bytes: &[u8]) -> Result<(String, String), SyncError> {
+    let length = bytes
+        .get(..4)
+        .ok_or(SyncError::InvalidText)?
+        .try_into()
+        .map(u32::from_le_bytes)
+        .map_err(|_| SyncError::InvalidText)?;
+    let boundary = 4_usize
+        .checked_add(usize::try_from(length).map_err(|_| SyncError::TextTooLarge)?)
+        .ok_or(SyncError::TextTooLarge)?;
+    let plain = std::str::from_utf8(bytes.get(4..boundary).ok_or(SyncError::InvalidText)?)
+        .map_err(|_| SyncError::InvalidText)?;
+    let rich = std::str::from_utf8(bytes.get(boundary..).ok_or(SyncError::InvalidText)?)
+        .map_err(|_| SyncError::InvalidText)?;
+    if plain.is_empty() || rich.is_empty() {
+        return Err(SyncError::InvalidText);
+    }
+    Ok((plain.to_owned(), rich.to_owned()))
 }
 
 fn decode_png(bytes: &[u8]) -> Result<ClipboardValue, SyncError> {
@@ -442,6 +542,9 @@ pub enum SyncError {
     /// Encoded or decoded image exceeds safety limits.
     #[error("clipboard image exceeds size limits")]
     ImageTooLarge,
+    /// Rich text fields exceed the portable framing limit.
+    #[error("clipboard text exceeds size limits")]
+    TextTooLarge,
 }
 
 #[cfg(test)]
@@ -547,6 +650,44 @@ mod tests {
     }
 
     #[test]
+    fn rich_text_round_trips_with_searchable_plain_text_and_blob_fidelity() {
+        use superspace_storage::ClipboardQuery;
+
+        let directory = tempfile::tempdir().expect("directory");
+        let first_backend = MemoryBackend::default();
+        let rich = ClipboardValue::Html {
+            plain: "Hello Superspace".into(),
+            html: "<strong>Hello Superspace</strong>".into(),
+        };
+        *first_backend.0.borrow_mut() = Some(rich.clone());
+        let second_backend = MemoryBackend::default();
+        let mut first = coordinator(&directory, Uuid::from_u128(1), first_backend);
+        let mut second = coordinator(&directory, Uuid::from_u128(2), second_backend.clone());
+        let event = first
+            .poll_local(10, [Uuid::from_u128(2)], 1_000)
+            .expect("poll")
+            .expect("event");
+        assert_eq!(event.format, ClipboardFormat::Html);
+        assert_eq!(
+            second.receive(&event, 11).expect("receive"),
+            SyncOutcome::Applied
+        );
+        assert_eq!(second_backend.0.borrow().as_ref(), Some(&rich));
+        let history = second
+            .history
+            .query(&ClipboardQuery {
+                text: "Superspace",
+                kind: Some(ClipboardKind::Html),
+                include_sensitive: false,
+                limit: 10,
+            })
+            .expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].text.as_deref(), Some("Hello Superspace"));
+        assert!(history[0].blob_hash.is_some());
+    }
+
+    #[test]
     fn unresolved_and_corrupt_blobs_never_touch_the_clipboard() {
         let directory = tempfile::tempdir().expect("directory");
         let backend = MemoryBackend::default();
@@ -571,6 +712,65 @@ mod tests {
         assert_eq!(
             sync.receive_blob(&event, expected, 12).expect("apply"),
             SyncOutcome::Applied
+        );
+    }
+
+    #[test]
+    fn excluded_and_sensitive_copies_never_enter_peer_queue() {
+        use superspace_storage::ClipboardQuery;
+
+        let directory = tempfile::tempdir().expect("directory");
+        let peer = Uuid::from_u128(2);
+        let backend = MemoryBackend::default();
+        *backend.0.borrow_mut() = Some(ClipboardValue::Text("password".into()));
+        let mut sync = coordinator(&directory, Uuid::from_u128(1), backend.clone());
+        let excluded = ClipboardCapturePolicy::new(["com.password.manager".into()]);
+        assert!(
+            sync.poll_local_with_context(
+                10,
+                [peer],
+                1_000,
+                &excluded,
+                &ClipboardContext {
+                    application_id: Some("com.password.manager".into()),
+                    sensitive: false,
+                },
+            )
+            .expect("excluded poll")
+            .is_none()
+        );
+        assert_eq!(sync.history.count().expect("empty history"), 0);
+
+        *backend.0.borrow_mut() = Some(ClipboardValue::Text("one-time secret".into()));
+        assert!(
+            sync.poll_local_with_context(
+                11,
+                [peer],
+                1_000,
+                &ClipboardCapturePolicy::default(),
+                &ClipboardContext {
+                    application_id: Some("dev.terminal".into()),
+                    sensitive: true,
+                },
+            )
+            .expect("sensitive poll")
+            .is_none()
+        );
+        assert!(sync.pending_for(peer, 12).is_empty());
+        let entries = sync
+            .history
+            .query(&ClipboardQuery {
+                text: "secret",
+                kind: None,
+                include_sensitive: true,
+                limit: 10,
+            })
+            .expect("revealed history");
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].sensitive);
+        assert_eq!(
+            entries[0].source.application_id.as_deref(),
+            Some("dev.terminal")
         );
     }
 }
