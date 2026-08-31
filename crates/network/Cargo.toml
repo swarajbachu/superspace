@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 superspace-protocol = { path = "../protocol" }
+blake3.workspace = true
+snow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
