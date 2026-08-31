@@ -31,6 +31,7 @@ thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 tempfile = "3.22"
 wasmparser = "0.239"
+wasmtime = { version = "36.0", default-features = false, features = ["component-model", "cranelift", "runtime"] }
 gpui = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a" }
 gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "e2ddcc6805f8c5088e62a60dfe517abcccd61a9a", features = ["wayland", "x11", "font-kit", "runtime_shaders"] }
 
