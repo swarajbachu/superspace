@@ -44,6 +44,9 @@ pub enum TransferError {
     /// Existing staging content conflicts with the authenticated manifest.
     #[error("file transfer resume state is invalid")]
     InvalidResumeState,
+    /// Aggregate manifest size cannot be represented safely.
+    #[error("file transfer size overflows supported limits")]
+    SizeOverflow,
 }
 
 struct ReceivingEntry {
@@ -62,6 +65,38 @@ pub struct TransferReceiver {
     incoming_root: PathBuf,
     staging_root: PathBuf,
     entries: Vec<ReceivingEntry>,
+    total_bytes: u64,
+}
+
+/// Immutable progress snapshot for sender and receiver UI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferProgress {
+    /// Total bytes declared by the authenticated manifest.
+    pub total_bytes: u64,
+    /// Bytes already sent or durably staged, including resumed content.
+    pub completed_bytes: u64,
+    /// Number of fully completed files.
+    pub completed_files: usize,
+    /// Total number of files.
+    pub total_files: usize,
+    /// Relative path currently being transferred, if any.
+    pub current_file: Option<String>,
+}
+
+impl TransferProgress {
+    /// Completion fraction in `0.0..=1.0`, with empty transfers treated as complete.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "UI progress ratios intentionally approximate exact byte counters"
+    )]
+    pub fn fraction(&self) -> f64 {
+        if self.total_bytes == 0 {
+            1.0
+        } else {
+            self.completed_bytes as f64 / self.total_bytes as f64
+        }
+    }
 }
 
 impl TransferReceiver {
@@ -87,7 +122,11 @@ impl TransferReceiver {
         }
         let mut entries = Vec::with_capacity(manifest.entries.len());
         let mut required = 0_u64;
+        let mut total_bytes = 0_u64;
         for (index, entry) in manifest.entries.iter().enumerate() {
+            total_bytes = total_bytes
+                .checked_add(entry.size)
+                .ok_or(TransferError::SizeOverflow)?;
             let final_path = staging_root.join(&entry.relative_path);
             let parent = final_path
                 .parent()
@@ -160,6 +199,7 @@ impl TransferReceiver {
             incoming_root,
             staging_root,
             entries,
+            total_bytes,
         })
     }
 
@@ -205,6 +245,25 @@ impl TransferReceiver {
     #[must_use]
     pub fn resume_offsets(&self) -> Vec<u64> {
         self.entries.iter().map(|entry| entry.received).collect()
+    }
+
+    /// Snapshot aggregate and current-file progress.
+    #[must_use]
+    pub fn progress(&self) -> TransferProgress {
+        let completed_bytes = self.entries.iter().map(|entry| entry.received).sum();
+        let completed_files = self.entries.iter().filter(|entry| entry.complete).count();
+        let current_file = self
+            .entries
+            .iter()
+            .position(|entry| !entry.complete)
+            .map(|index| self.manifest.entries[index].relative_path.clone());
+        TransferProgress {
+            total_bytes: self.total_bytes,
+            completed_bytes,
+            completed_files,
+            total_files: self.entries.len(),
+            current_file,
+        }
     }
 
     /// Atomically publish the completed transfer with collision-safe naming.
@@ -342,6 +401,11 @@ mod tests {
             })
             .expect("first chunk");
         assert_eq!(receiver.resume_offsets(), [10]);
+        let progress = receiver.progress();
+        assert_eq!(progress.completed_bytes, 10);
+        assert_eq!(progress.total_bytes, bytes.len() as u64);
+        assert_eq!(progress.current_file.as_deref(), Some("folder/hello.txt"));
+        assert!(progress.fraction() > 0.0 && progress.fraction() < 1.0);
         receiver
             .accept(&TransferChunk {
                 transfer_id: manifest.id,
@@ -350,6 +414,7 @@ mod tests {
                 bytes: bytes[10..].to_vec(),
             })
             .expect("final chunk");
+        assert!((receiver.progress().fraction() - 1.0).abs() <= f64::EPSILON);
         let destination = receiver.finish().expect("finish");
         assert_eq!(
             fs::read(destination.join("folder/hello.txt")).expect("read"),

@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use quinn::Connection;
 use superspace_protocol::{Message, TransferManifest};
@@ -8,7 +10,30 @@ use crate::{
     BlobReceiver, BlobTransferError, FrameError, MAX_CHUNK_SIZE, read_blob_chunk, read_frame,
     write_frame,
 };
-use crate::{TransferError, TransferReceiver, read_transfer_chunk};
+use crate::{TransferError, TransferProgress, TransferReceiver, read_transfer_chunk};
+
+/// Cloneable cooperative cancellation signal for an active transfer session.
+#[derive(Clone, Debug, Default)]
+pub struct TransferCancellation(Arc<AtomicBool>);
+
+impl TransferCancellation {
+    /// Create a signal in the running state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Request cancellation. Active loops observe this between bounded chunks.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 /// Request and receive one authenticated content-addressed blob over a QUIC bidirectional stream.
 ///
@@ -119,49 +144,139 @@ pub async fn send_transfer(
     source_root: impl AsRef<Path>,
     manifest: &TransferManifest,
 ) -> Result<(), TransferSessionError> {
+    send_transfer_with_progress(
+        connection,
+        source_root,
+        manifest,
+        &TransferCancellation::new(),
+        |_| {},
+    )
+    .await
+}
+
+/// Send a transfer with progress snapshots and bidirectional cooperative cancellation.
+///
+/// # Errors
+/// Returns the same validation and transport failures as [`send_transfer`], plus
+/// [`TransferSessionError::Cancelled`] when either peer cancels.
+#[allow(
+    clippy::too_many_lines,
+    reason = "streaming state machine is kept contiguous for protocol auditability"
+)]
+pub async fn send_transfer_with_progress(
+    connection: &Connection,
+    source_root: impl AsRef<Path>,
+    manifest: &TransferManifest,
+    cancellation: &TransferCancellation,
+    mut on_progress: impl FnMut(TransferProgress),
+) -> Result<(), TransferSessionError> {
     manifest.validate().map_err(TransferError::from)?;
     let (mut send, mut receive) = connection
         .open_bi()
         .await
         .map_err(|_| TransferSessionError::Stream)?;
     write_frame(&mut send, &Message::TransferOffer(manifest.clone())).await?;
-    let Message::TransferResume { id, offsets } = read_frame(&mut receive).await? else {
+    let resume_message = read_frame(&mut receive).await?;
+    if matches!(resume_message, Message::CancelTransfer { id } if id == manifest.id) {
+        return Err(TransferSessionError::Cancelled);
+    }
+    let Message::TransferResume { id, offsets } = resume_message else {
         return Err(TransferSessionError::UnexpectedMessage);
     };
     if id != manifest.id || offsets.len() != manifest.entries.len() {
         return Err(TransferSessionError::InvalidResume);
     }
+    if offsets
+        .iter()
+        .zip(&manifest.entries)
+        .any(|(offset, entry)| *offset > entry.size)
+    {
+        return Err(TransferSessionError::InvalidResume);
+    }
+    let total_bytes = manifest.entries.iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(entry.size)
+            .ok_or(TransferError::SizeOverflow)
+    })?;
+    let mut completed_bytes = offsets.iter().try_fold(0_u64, |total, offset| {
+        total
+            .checked_add(*offset)
+            .ok_or(TransferError::SizeOverflow)
+    })?;
+    let mut completed_files = offsets
+        .iter()
+        .zip(&manifest.entries)
+        .filter(|(offset, entry)| **offset == entry.size)
+        .count();
+    on_progress(TransferProgress {
+        total_bytes,
+        completed_bytes,
+        completed_files,
+        total_files: manifest.entries.len(),
+        current_file: None,
+    });
+    let mut response = Box::pin(read_frame(&mut receive));
     for (index, (entry, mut offset)) in manifest.entries.iter().zip(offsets).enumerate() {
-        if offset > entry.size {
-            return Err(TransferSessionError::InvalidResume);
-        }
+        let was_incomplete = offset < entry.size;
         let source = source_root.as_ref().join(&entry.relative_path);
         while offset < entry.size {
+            if cancellation.is_cancelled() {
+                write_frame(&mut send, &Message::CancelTransfer { id: manifest.id }).await?;
+                send.finish().map_err(|_| TransferSessionError::Stream)?;
+                return Err(TransferSessionError::Cancelled);
+            }
             let bytes = read_transfer_chunk(&source, offset, MAX_CHUNK_SIZE)?;
             if bytes.is_empty() {
                 return Err(TransferSessionError::SourceChanged);
             }
             let length =
                 u64::try_from(bytes.len()).map_err(|_| TransferSessionError::SourceChanged)?;
-            write_frame(
-                &mut send,
-                &Message::TransferChunk(superspace_protocol::TransferChunk {
-                    transfer_id: manifest.id,
-                    entry_index: u32::try_from(index)
-                        .map_err(|_| TransferSessionError::InvalidResume)?,
-                    offset,
-                    bytes,
-                }),
-            )
-            .await?;
+            let chunk_message = Message::TransferChunk(superspace_protocol::TransferChunk {
+                transfer_id: manifest.id,
+                entry_index: u32::try_from(index)
+                    .map_err(|_| TransferSessionError::InvalidResume)?,
+                offset,
+                bytes,
+            });
+            let send_chunk = write_frame(&mut send, &chunk_message);
+            tokio::select! {
+                result = send_chunk => result?,
+                message = &mut response => {
+                    return match message? {
+                        Message::CancelTransfer { id } if id == manifest.id => Err(TransferSessionError::Cancelled),
+                        _ => Err(TransferSessionError::UnexpectedMessage),
+                    };
+                }
+            }
             offset = offset
                 .checked_add(length)
                 .ok_or(TransferSessionError::SourceChanged)?;
+            completed_bytes = completed_bytes
+                .checked_add(length)
+                .ok_or(TransferError::SizeOverflow)?;
+            on_progress(TransferProgress {
+                total_bytes,
+                completed_bytes,
+                completed_files,
+                total_files: manifest.entries.len(),
+                current_file: Some(entry.relative_path.clone()),
+            });
+        }
+        if was_incomplete {
+            completed_files += 1;
+            on_progress(TransferProgress {
+                total_bytes,
+                completed_bytes,
+                completed_files,
+                total_files: manifest.entries.len(),
+                current_file: None,
+            });
         }
     }
     send.finish().map_err(|_| TransferSessionError::Stream)?;
-    match read_frame(&mut receive).await? {
+    match response.await? {
         Message::Acknowledge { id } if id == manifest.id => Ok(()),
+        Message::CancelTransfer { id } if id == manifest.id => Err(TransferSessionError::Cancelled),
         _ => Err(TransferSessionError::UnexpectedMessage),
     }
 }
@@ -176,6 +291,27 @@ pub async fn receive_transfer(
     connection: &Connection,
     incoming_root: impl Into<PathBuf>,
 ) -> Result<PathBuf, TransferSessionError> {
+    receive_transfer_with_progress(
+        connection,
+        incoming_root,
+        &TransferCancellation::new(),
+        |_| {},
+    )
+    .await
+}
+
+/// Receive a transfer with progress snapshots and resumable cooperative cancellation.
+///
+/// Cancelling retains verified partial files for a later resume.
+///
+/// # Errors
+/// Returns the same failures as [`receive_transfer`], plus cancellation from either peer.
+pub async fn receive_transfer_with_progress(
+    connection: &Connection,
+    incoming_root: impl Into<PathBuf>,
+    cancellation: &TransferCancellation,
+    mut on_progress: impl FnMut(TransferProgress),
+) -> Result<PathBuf, TransferSessionError> {
     let (mut send, mut receive) = connection
         .accept_bi()
         .await
@@ -184,6 +320,7 @@ pub async fn receive_transfer(
         return Err(TransferSessionError::UnexpectedMessage);
     };
     let mut receiver = TransferReceiver::begin(incoming_root, manifest.clone())?;
+    on_progress(receiver.progress());
     write_frame(
         &mut send,
         &Message::TransferResume {
@@ -198,10 +335,20 @@ pub async fn receive_transfer(
         .zip(&manifest.entries)
         .any(|(offset, entry)| *offset < entry.size)
     {
-        let Message::TransferChunk(chunk) = read_frame(&mut receive).await? else {
+        if cancellation.is_cancelled() {
+            write_frame(&mut send, &Message::CancelTransfer { id: manifest.id }).await?;
+            send.finish().map_err(|_| TransferSessionError::Stream)?;
+            return Err(TransferSessionError::Cancelled);
+        }
+        let message = read_frame(&mut receive).await?;
+        if matches!(message, Message::CancelTransfer { id } if id == manifest.id) {
+            return Err(TransferSessionError::Cancelled);
+        }
+        let Message::TransferChunk(chunk) = message else {
             return Err(TransferSessionError::UnexpectedMessage);
         };
         receiver.accept(&chunk)?;
+        on_progress(receiver.progress());
     }
     let destination = receiver.finish()?;
     write_frame(&mut send, &Message::Acknowledge { id: manifest.id }).await?;
@@ -230,6 +377,9 @@ pub enum TransferSessionError {
     /// Source file was truncated or replaced during streaming.
     #[error("file transfer source changed while reading")]
     SourceChanged,
+    /// Local user or authenticated peer cancelled the transfer.
+    #[error("file transfer was cancelled")]
+    Cancelled,
 }
 
 #[cfg(test)]
@@ -345,9 +495,24 @@ mod tests {
         let server_connection = server_connection.expect("server connection");
         let client_connection = client_connection.expect("client connection");
         let incoming = directory.path().join("incoming");
+        let send_cancellation = TransferCancellation::new();
+        let receive_cancellation = TransferCancellation::new();
+        let mut sent_progress = Vec::new();
+        let mut received_progress = Vec::new();
         let (receive_outcome, send_outcome) = tokio::join!(
-            receive_transfer(&server_connection, incoming),
-            send_transfer(&client_connection, &source_root, &manifest)
+            receive_transfer_with_progress(
+                &server_connection,
+                incoming,
+                &receive_cancellation,
+                |progress| received_progress.push(progress),
+            ),
+            send_transfer_with_progress(
+                &client_connection,
+                &source_root,
+                &manifest,
+                &send_cancellation,
+                |progress| sent_progress.push(progress),
+            )
         );
         send_outcome.expect("send transfer");
         let destination = receive_outcome.expect("receive transfer");
@@ -355,5 +520,26 @@ mod tests {
             std::fs::read(destination.join("nested/data.bin")).expect("destination file"),
             bytes
         );
+        assert!(
+            (sent_progress.last().expect("send progress").fraction() - 1.0).abs() <= f64::EPSILON
+        );
+        assert!(
+            (received_progress
+                .last()
+                .expect("receive progress")
+                .fraction()
+                - 1.0)
+                .abs()
+                <= f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn cancellation_signal_is_cloneable_and_monotonic() {
+        let cancellation = TransferCancellation::new();
+        let observer = cancellation.clone();
+        assert!(!observer.is_cancelled());
+        cancellation.cancel();
+        assert!(observer.is_cancelled());
     }
 }
