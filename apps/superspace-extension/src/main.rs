@@ -5,8 +5,8 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 use superspace_extensions::{
-    Sandbox, SandboxLimits, install_package, package_component, scaffold_extension,
-    validate_package,
+    PublisherIdentity, Sandbox, SandboxLimits, install_package, package_component, publish_package,
+    scaffold_extension, validate_package,
 };
 
 fn main() -> Result<()> {
@@ -47,6 +47,22 @@ fn main() -> Result<()> {
             let receipt = install_package(path, root)?;
             println!("installed {} {}", receipt.id, receipt.version);
         }
+        Some("keygen") => {
+            let path = required(&mut arguments, "publisher key path")?;
+            no_more(arguments)?;
+            let identity = PublisherIdentity::generate();
+            identity.write_new(path)?;
+            println!("publisher public key: {}", identity.public_key());
+        }
+        Some("publish") => {
+            let package = required(&mut arguments, "package path")?;
+            let registry = required(&mut arguments, "registry root")?;
+            let key = required(&mut arguments, "publisher key path")?;
+            no_more(arguments)?;
+            let identity = PublisherIdentity::read(key)?;
+            let record = publish_package(package, registry, &identity)?;
+            println!("published {} {}", record.id, record.version);
+        }
         Some("run") => {
             let path = required(&mut arguments, "package path")?;
             no_more(arguments)?;
@@ -59,7 +75,7 @@ fn main() -> Result<()> {
         }
         Some("--version" | "-V") => println!("superspace-extension {}", env!("CARGO_PKG_VERSION")),
         _ => bail!(
-            "usage: superspace-extension <new|build|package|validate|install|run> [arguments]"
+            "usage: superspace-extension <new|build|package|validate|install|keygen|publish|run> [arguments]"
         ),
     }
     Ok(())

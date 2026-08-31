@@ -26,6 +26,7 @@ rust-version = "1.88"
 anyhow = "1.0"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 blake3 = { version = "1.8", features = ["pure"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 ciborium = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10"
@@ -34,6 +35,7 @@ mdns-sd = { version = "0.21", default-features = false }
 png = "0.18"
 plist = "1.8"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rust_decimal = "1.42"

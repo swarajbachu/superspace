@@ -5,10 +5,14 @@ mod host;
 mod manifest;
 mod package;
 mod policy;
+mod registry;
 
 pub use manifest::{Capability, Command, ExtensionManifest, FilesystemGrant, NetworkGrant};
 pub use package::{ExtensionPackage, PackageError};
 pub use policy::{CapabilityPolicy, PolicyError};
+pub use registry::{
+    PublisherIdentity, RegistryError, RegistryRecord, publish_package, verify_registry_package,
+};
 
 /// Stable component-model interface implemented by Superspace extensions.
 pub const INTERFACE_ID: &str = "superspace:extension@1";
