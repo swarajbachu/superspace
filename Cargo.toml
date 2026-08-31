@@ -51,7 +51,7 @@ snow = "0.10"
 thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 tempfile = "3.22"
-tokio = { version = "1.47", features = ["io-util", "macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 wasmparser = "0.239"
 wasmtime = { version = "36.0", default-features = false, features = ["component-model", "cranelift", "runtime"] }
 wit-parser = "0.236"

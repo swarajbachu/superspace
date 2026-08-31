@@ -21,6 +21,7 @@ superspace-productivity = { path = "../../crates/productivity" }
 superspace-storage = { path = "../../crates/storage" }
 superspace-sync = { path = "../../crates/sync" }
 superspace-ui = { path = "../../crates/ui" }
+tokio.workspace = true
 uuid.workspace = true
 
 [lints]

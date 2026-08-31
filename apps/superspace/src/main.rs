@@ -1,5 +1,7 @@
 //! Superspace command-line and desktop application entry point.
 
+use std::io::Write as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -13,7 +15,9 @@ use superspace_productivity::{
     Item, ItemContent, ProductivityStore, expand_snippet, resolve_command, resolve_quicklink,
     search_emoji,
 };
-use superspace_storage::{BlobStore, ClipboardQuery, ClipboardStore, Retention};
+use superspace_storage::{
+    BlobStore, ClipboardQuery, ClipboardStore, Retention, TrustedDevice, TrustedDeviceStore,
+};
 use uuid::Uuid;
 
 fn main() -> Result<()> {
@@ -91,9 +95,77 @@ fn nearby(mut arguments: impl Iterator<Item = String>) -> Result<()> {
                 bail!("trusted device not found: {id}");
             }
         }
-        _ => bail!("usage: superspace nearby <identity|trusted|enable|revoke|forget> [device-id]"),
+        "pair-listen" | "pair-connect" => {
+            let address = required(&mut arguments, "socket address")?.parse::<SocketAddr>()?;
+            let name = arguments.collect::<Vec<_>>().join(" ");
+            if name.trim().is_empty() {
+                bail!("usage: superspace nearby {action} <ip:port> <device-name>");
+            }
+            pair_device(&root, action == "pair-listen", address, name)?;
+        }
+        _ => bail!(
+            "usage: superspace nearby <identity|trusted|enable|revoke|forget|pair-listen|pair-connect> [arguments]"
+        ),
     }
     Ok(())
+}
+
+fn pair_device(root: &Path, listen: bool, address: SocketAddr, name: String) -> Result<()> {
+    let identity =
+        superspace_network::LocalIdentity::load_or_create(root.join("local-identity.cbor"))?;
+    let info = superspace_network::PairingPublicInfo::for_local(&identity, name);
+    let runtime = tokio::runtime::Runtime::new()?;
+    let peer = runtime.block_on(async {
+        let pairing = async {
+            if listen {
+                let listener = tokio::net::TcpListener::bind(address).await?;
+                println!("waiting for a peer on {}", listener.local_addr()?);
+                let (mut stream, remote) = listener.accept().await?;
+                println!("pairing request from {remote}");
+                superspace_network::pair_incoming(
+                    &mut stream,
+                    &identity,
+                    &info,
+                    |code| async move { confirm_pairing(code) },
+                )
+                .await
+                .map_err(anyhow::Error::from)
+            } else {
+                let mut stream = tokio::net::TcpStream::connect(address).await?;
+                superspace_network::pair_outgoing(
+                    &mut stream,
+                    &identity,
+                    &info,
+                    |code| async move { confirm_pairing(code) },
+                )
+                .await
+                .map_err(anyhow::Error::from)
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5 * 60), pairing)
+            .await
+            .context("pairing timed out")?
+    })?;
+    TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))?.upsert(&TrustedDevice {
+        id: peer.info.device_id,
+        name: peer.info.name.clone(),
+        noise_public_key: peer.noise_public_key,
+        certificate_der: peer.info.certificate_der,
+        paired_at: now_ms(),
+        last_seen_at: None,
+        enabled: true,
+    })?;
+    println!("paired with {} ({})", peer.info.name, peer.info.device_id);
+    Ok(())
+}
+
+fn confirm_pairing(code: superspace_network::PairingCode) -> bool {
+    print!("Confirm that both devices show {code}. Type `yes`: ");
+    if std::io::stdout().flush().is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    std::io::stdin().read_line(&mut response).is_ok() && response.trim() == "yes"
 }
 
 fn clipboard(mut arguments: impl Iterator<Item = String>) -> Result<()> {

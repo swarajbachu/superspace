@@ -5,6 +5,7 @@ mod discovery;
 mod frame;
 mod identity;
 mod pairing;
+mod pairing_session;
 mod replication;
 mod session;
 mod transfer;
@@ -17,6 +18,9 @@ pub use identity::{IdentityStoreError, LocalIdentity};
 pub use pairing::{
     DeviceKeypair, InitiatorFinish, PairingCode, PairingError, PairingInitiator, PairingResponder,
     ResponderFinish, ResponderReply, SecureChannel,
+};
+pub use pairing_session::{
+    PairedPeer, PairingPublicInfo, PairingSessionError, pair_incoming, pair_outgoing,
 };
 pub use replication::{ApplyDecision, PendingEvent, ReplicationError, ReplicationLedger};
 pub use session::{
