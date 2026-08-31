@@ -1,16 +1,22 @@
 //! GPUI application shell for Superspace.
 
+mod model;
 #[cfg(feature = "desktop")]
-mod motion;
+pub mod motion;
 #[cfg(feature = "desktop")]
 mod shell;
 #[cfg(feature = "desktop")]
 mod theme;
 
+pub use model::{ActionItem, PaletteEntry, PaletteEvent, PaletteKey, PaletteMode, PaletteModel};
+
 #[cfg(feature = "desktop")]
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
 /// Start the headed Superspace application.
+///
+/// # Panics
+/// Panics if GPUI cannot create the palette window after application startup.
 #[cfg(feature = "desktop")]
 pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {

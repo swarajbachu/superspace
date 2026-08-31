@@ -19,6 +19,7 @@ pub struct CubicBezier {
 
 impl CubicBezier {
     /// Construct a curve with fixed `(0,0)` and `(1,1)` endpoints.
+    #[must_use]
     pub const fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
         Self { x1, y1, x2, y2 }
     }
@@ -43,8 +44,11 @@ impl CubicBezier {
     #[must_use]
     pub fn evaluate(self, progress: f32) -> f32 {
         let progress = progress.clamp(0.0, 1.0);
-        if progress == 0.0 || progress == 1.0 {
-            return progress;
+        if progress <= f32::EPSILON {
+            return 0.0;
+        }
+        if progress >= 1.0 - f32::EPSILON {
+            return 1.0;
         }
         let mut t = progress;
         for _ in 0..8 {
@@ -99,10 +103,10 @@ mod tests {
     #[test]
     fn curves_hold_endpoints_and_remain_bounded() {
         for motion in [ENTER, QUICK, EXIT] {
-            assert_eq!(motion.curve.evaluate(0.0), 0.0);
-            assert_eq!(motion.curve.evaluate(1.0), 1.0);
-            for step in 0..=100 {
-                assert!((0.0..=1.0).contains(&motion.curve.evaluate(step as f32 / 100.0)));
+            assert!(motion.curve.evaluate(0.0).abs() <= f32::EPSILON);
+            assert!((motion.curve.evaluate(1.0) - 1.0).abs() <= f32::EPSILON);
+            for step in 0_u16..=100 {
+                assert!((0.0..=1.0).contains(&motion.curve.evaluate(f32::from(step) / 100.0)));
             }
         }
     }

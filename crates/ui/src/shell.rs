@@ -1,47 +1,125 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, App, AppContext as _, Context, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div, px,
+    AnimationExt as _, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Render, Styled as _, Window, div, px,
 };
-use superspace_core::{SearchCandidate, builtin_features, rank_candidates};
+use superspace_core::builtin_features;
 
-use crate::{motion, theme};
+use crate::{
+    ActionItem, PaletteEntry, PaletteEvent, PaletteKey, PaletteMode, PaletteModel, motion, theme,
+};
 
 /// Main command palette state.
 pub struct Palette {
-    query: String,
-    selected: usize,
+    model: PaletteModel,
+    focus: FocusHandle,
+    status: String,
 }
 
 impl Palette {
-    pub(crate) fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
-        Self {
-            query: String::new(),
-            selected: 0,
-        }
-    }
-
-    fn matches(&self) -> Vec<superspace_core::SearchMatch<'static>> {
-        rank_candidates(
-            &self.query,
-            builtin_features().iter().map(|feature| SearchCandidate {
-                id: feature.id,
-                title: feature.title,
-                keywords: &[],
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let entries = builtin_features()
+            .iter()
+            .map(|feature| PaletteEntry {
+                id: feature.id.into(),
+                title: feature.title.into(),
+                keywords: vec![format!("{:?}", feature.area).to_ascii_lowercase()],
+                preview: preview(feature.id).into(),
                 frequency: 0,
                 favorite: matches!(
                     feature.id,
                     "app-launcher" | "clipboard-history" | "nearby-share"
                 ),
-            }),
-        )
+                actions: vec![
+                    ActionItem {
+                        id: "open".into(),
+                        title: "Open".into(),
+                        shortcut: Some("↵".into()),
+                    },
+                    ActionItem {
+                        id: "favorite".into(),
+                        title: "Toggle Favorite".into(),
+                        shortcut: None,
+                    },
+                ],
+            })
+            .collect();
+        Self {
+            model: PaletteModel::new(entries),
+            focus,
+            status: "Nearby devices appear here automatically".into(),
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let key = match keystroke.key.as_str() {
+            "up" => Some(PaletteKey::Up),
+            "down" => Some(PaletteKey::Down),
+            "enter" => Some(PaletteKey::Enter),
+            "escape" => Some(PaletteKey::Escape),
+            "backspace" => Some(PaletteKey::Backspace),
+            "k" if keystroke.modifiers.platform || keystroke.modifiers.control => {
+                Some(PaletteKey::OpenActions)
+            }
+            _ if !keystroke.modifiers.platform && !keystroke.modifiers.control => {
+                keystroke.key_char.clone().map(PaletteKey::Text)
+            }
+            _ => None,
+        };
+        let Some(key) = key else {
+            return;
+        };
+        match self.model.key(key) {
+            PaletteEvent::None => {}
+            PaletteEvent::Invoke {
+                entry_id,
+                action_id,
+            } => self.status = format!("Requested {action_id} for {entry_id}"),
+            PaletteEvent::Dismiss => window.remove_window(),
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+}
+
+impl Focusable for Palette {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
 impl Render for Palette {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "declarative palette layout is clearest as one tree"
+    )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::get(cx);
-        let matches = self.matches();
-        self.selected = self.selected.min(matches.len().saturating_sub(1));
+        let matches = self.model.results().cloned().collect::<Vec<_>>();
+        let selected = self.model.selected_entry().cloned();
+        let selected_title = selected
+            .as_ref()
+            .map_or_else(|| "No results".into(), |entry| entry.title.clone());
+        let selected_preview = selected.as_ref().map_or_else(
+            || "Try another search".into(),
+            |entry| entry.preview.clone(),
+        );
+        let rows = if self.model.mode() == PaletteMode::Actions {
+            self.model
+                .actions()
+                .iter()
+                .map(|action| (action.title.clone(), action.id.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            matches
+                .iter()
+                .map(|entry| (entry.title.clone(), entry.id.clone()))
+                .collect::<Vec<_>>()
+        };
+        let selected_index = self.model.selected_index();
 
         div()
             .id("superspace-palette")
@@ -54,6 +132,8 @@ impl Render for Palette {
             .border_color(theme.border)
             .rounded(px(18.0))
             .overflow_hidden()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
             .child(
                 div()
                     .h(px(68.0))
@@ -63,18 +143,25 @@ impl Render for Palette {
                     .border_b_1()
                     .border_color(theme.border)
                     .gap(px(12.0))
-                    .child(div().text_size(px(20.0)).text_color(theme.accent).child("✦"))
                     .child(
                         div()
-                            .flex_1()
                             .text_size(px(20.0))
-                            .child(if self.query.is_empty() {
-                                "Search Superspace…".to_string()
-                            } else {
-                                self.query.clone()
-                            }),
+                            .text_color(theme.accent)
+                            .child("✦"),
                     )
-                    .child(div().text_size(px(12.0)).text_color(theme.muted).child("⌘ Space")),
+                    .child(div().flex_1().text_size(px(20.0)).child(
+                        if self.model.query().is_empty() {
+                            "Search Superspace…".to_string()
+                        } else {
+                            self.model.query().to_string()
+                        },
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme.muted)
+                            .child("⌘ Space"),
+                    ),
             )
             .child(
                 div()
@@ -88,8 +175,8 @@ impl Render for Palette {
                             .flex()
                             .flex_col()
                             .gap(px(3.0))
-                            .children(matches.iter().take(10).enumerate().map(|(index, entry)| {
-                                let selected = index == self.selected;
+                            .children(rows.iter().take(10).enumerate().map(|(index, entry)| {
+                                let selected = index == selected_index;
                                 div()
                                     .id(("command-row", index))
                                     .h(px(42.0))
@@ -99,12 +186,12 @@ impl Render for Palette {
                                     .justify_between()
                                     .rounded(px(9.0))
                                     .when(selected, |row| row.bg(theme.selected))
-                                    .child(div().text_size(px(14.0)).child(entry.candidate.title))
+                                    .child(div().text_size(px(14.0)).child(entry.0.clone()))
                                     .child(
                                         div()
                                             .text_size(px(11.0))
                                             .text_color(theme.muted)
-                                            .child(entry.candidate.id),
+                                            .child(entry.1.clone()),
                                     )
                             })),
                     )
@@ -124,16 +211,12 @@ impl Render for Palette {
                                     .text_color(theme.accent)
                                     .child("SUPERSPACE"),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(22.0))
-                                    .child(matches.first().map_or("No results", |entry| entry.candidate.title)),
-                            )
+                            .child(div().text_size(px(22.0)).child(selected_title))
                             .child(
                                 div()
                                     .text_size(px(13.0))
                                     .text_color(theme.muted)
-                                    .child("Launch apps, calculate, search, or send anything to a nearby device."),
+                                    .child(selected_preview),
                             ),
                     ),
             )
@@ -148,11 +231,33 @@ impl Render for Palette {
                     .border_color(theme.border)
                     .text_size(px(11.0))
                     .text_color(theme.muted)
-                    .child("Nearby devices appear here automatically")
+                    .child(self.status.clone())
                     .child("Open ↵    Actions ⌘K"),
             )
-            .with_animation("palette-enter", motion::ENTER.animation(), |element, progress| {
-                element.opacity(progress).relative().top(px(6.0 * (1.0 - progress)))
-            })
+            .with_animation(
+                "palette-enter",
+                motion::ENTER.animation(),
+                |element, progress| {
+                    element
+                        .opacity(progress)
+                        .relative()
+                        .top(px(6.0 * (1.0 - progress)))
+                },
+            )
+    }
+}
+
+fn preview(id: &str) -> &'static str {
+    match id {
+        "app-launcher" => "Discover and launch installed macOS and Linux applications.",
+        "clipboard-history" => "Search, pin, and restore clipboard content across trusted devices.",
+        "nearby-share" => "Send files and folders over encrypted local-network connections.",
+        "calculator" => {
+            "Calculate expressions and convert units, dates, currencies, and time zones."
+        }
+        "wasm-extensions" => {
+            "Run capability-scoped WebAssembly extensions without ambient authority."
+        }
+        _ => "Open this Superspace command or press ⌘K / Ctrl+K for more actions.",
     }
 }
