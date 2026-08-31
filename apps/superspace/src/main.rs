@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
@@ -11,6 +13,8 @@ use superspace_productivity::{
     Item, ItemContent, ProductivityStore, expand_snippet, resolve_command, resolve_quicklink,
     search_emoji,
 };
+use superspace_storage::{BlobStore, ClipboardQuery, ClipboardStore, Retention};
+use uuid::Uuid;
 
 fn main() -> Result<()> {
     let mut arguments = std::env::args().skip(1);
@@ -28,12 +32,114 @@ fn main() -> Result<()> {
             launch_app(&id)?;
         }
         Some("launcher") => launcher(arguments)?,
+        Some("clipboard") => clipboard(arguments)?,
         Some("productivity") => productivity(arguments)?,
         Some("files") => files(arguments)?,
         Some("--version" | "-V") => println!("superspace {}", env!("CARGO_PKG_VERSION")),
         Some(command) => bail!("unknown command: {command}"),
     }
     Ok(())
+}
+
+fn clipboard(mut arguments: impl Iterator<Item = String>) -> Result<()> {
+    let action = arguments.next().unwrap_or_else(|| "history".into());
+    let root = data_root();
+    std::fs::create_dir_all(&root)?;
+    let history_path = root.join("clipboard.sqlite");
+    match action.as_str() {
+        "watch" => watch_clipboard(&root, &history_path, arguments)?,
+        "history" | "search" => {
+            let query = arguments.collect::<Vec<_>>().join(" ");
+            for entry in ClipboardStore::open(history_path)?.query(&ClipboardQuery {
+                text: &query,
+                kind: None,
+                include_sensitive: false,
+                limit: 100,
+            })? {
+                let content = entry.text.as_deref().unwrap_or("[binary content]");
+                println!(
+                    "{}\t{:?}\t{}\t{}",
+                    entry.id,
+                    entry.kind,
+                    entry.pinned_at.is_some(),
+                    content.replace(['\r', '\n'], " ")
+                );
+            }
+        }
+        "pin" | "unpin" => {
+            let id = required(&mut arguments, "clipboard item id")?.parse::<Uuid>()?;
+            no_more(arguments)?;
+            let pinned_at = (action == "pin").then_some(now_ms());
+            if !ClipboardStore::open(history_path)?.set_pinned(id, pinned_at)? {
+                bail!("clipboard item not found: {id}");
+            }
+        }
+        "remove" => {
+            let id = required(&mut arguments, "clipboard item id")?.parse::<Uuid>()?;
+            no_more(arguments)?;
+            let store = ClipboardStore::open(history_path)?;
+            let before = store.count()?;
+            store.remove(id)?;
+            if store.count()? == before {
+                bail!("clipboard item not found: {id}");
+            }
+        }
+        "prune" => {
+            let days = required(&mut arguments, "retention days")?.parse::<u64>()?;
+            no_more(arguments)?;
+            let duration = days
+                .checked_mul(24 * 60 * 60 * 1_000)
+                .context("retention duration is too large")?;
+            let cutoff = now_ms().saturating_sub(i64::try_from(duration).unwrap_or(i64::MAX));
+            let removed = ClipboardStore::open(history_path)?.prune(Retention::Before(cutoff))?;
+            println!("removed {removed} clipboard items");
+        }
+        _ => bail!(
+            "usage: superspace clipboard <watch|history|search|pin|unpin|remove|prune> [arguments]"
+        ),
+    }
+    Ok(())
+}
+
+fn watch_clipboard(
+    root: &Path,
+    history_path: &Path,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<()> {
+    let once = match arguments.next().as_deref() {
+        None => false,
+        Some("--once") => true,
+        Some(_) => bail!("usage: superspace clipboard watch [--once]"),
+    };
+    no_more(arguments)?;
+    let device_id = installation_id(root)?;
+    let backend = superspace_platform::NativeClipboard::connect()?;
+    let history = ClipboardStore::open(history_path)?;
+    let blobs = BlobStore::open(root.join("clipboard-blobs"))?;
+    let mut sync =
+        superspace_sync::ClipboardSync::new(device_id, now_u64(), backend, history, blobs);
+    loop {
+        let now = now_u64();
+        if let Some(event) = sync.poll_local(now, [], i64::MAX)? {
+            println!("captured {} {:?}", event.id, event.format);
+        }
+        if once {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn installation_id(root: &Path) -> Result<Uuid> {
+    let path = root.join("device-id");
+    match std::fs::read_to_string(&path) {
+        Ok(value) => return Ok(value.trim().parse()?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let id = Uuid::new_v4();
+    std::fs::write(path, id.to_string())?;
+    Ok(id)
 }
 
 fn launcher(mut arguments: impl Iterator<Item = String>) -> Result<()> {
@@ -303,6 +409,15 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
         .as_millis();
     i64::try_from(milliseconds).unwrap_or(i64::MAX)
+}
+
+fn now_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn print_apps() -> Result<()> {
