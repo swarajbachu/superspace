@@ -238,6 +238,22 @@ async fn handle_peer_request(
         superspace_network::IncomingPeerRequest::Blob(request) => {
             request.serve(root.join("clipboard-blobs")).await?;
         }
+        superspace_network::IncomingPeerRequest::Transfer(request) => {
+            let name = request.manifest().name.clone();
+            let cancellation = superspace_network::TransferCancellation::new();
+            let destination = request
+                .receive_with_progress(root.join("incoming"), &cancellation, |progress| {
+                    eprintln!(
+                        "receiving {name}: {}/{} bytes ({}/{})",
+                        progress.completed_bytes,
+                        progress.total_bytes,
+                        progress.completed_files,
+                        progress.total_files
+                    );
+                })
+                .await?;
+            println!("received {}", destination.display());
+        }
         superspace_network::IncomingPeerRequest::Clipboard(offer) => {
             let outcome = sync.receive(&offer.event, now)?;
             let outcome = match outcome {

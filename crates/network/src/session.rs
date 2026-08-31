@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use quinn::{Connection, SendStream};
+use quinn::{Connection, RecvStream, SendStream};
 use superspace_protocol::{
     ClipboardEvent, ContentHash, DeviceId, DeviceInfo, Message, PROTOCOL_VERSION, TransferManifest,
 };
@@ -103,6 +103,8 @@ pub enum IncomingPeerRequest {
     Clipboard(ClipboardOffer),
     /// Resumable request for a content-addressed clipboard blob.
     Blob(BlobRequest),
+    /// Resumable file or folder transfer offer.
+    Transfer(TransferRequest),
 }
 
 /// Accepted blob request with the response stream needed to serve it.
@@ -110,6 +112,86 @@ pub struct BlobRequest {
     hash: ContentHash,
     offset: u64,
     response: SendStream,
+}
+
+/// Accepted file/folder offer with its already-routed QUIC streams.
+pub struct TransferRequest {
+    manifest: TransferManifest,
+    response: SendStream,
+    receive: RecvStream,
+}
+
+impl TransferRequest {
+    /// Authenticated manifest supplied before any destination paths are created.
+    #[must_use]
+    pub const fn manifest(&self) -> &TransferManifest {
+        &self.manifest
+    }
+
+    /// Receive, verify, and atomically publish this transfer with progress and cancellation.
+    ///
+    /// Cancelling preserves bounded partial files for a later resume.
+    ///
+    /// # Errors
+    /// Returns manifest, disk, framing, stream, integrity, or cancellation failures.
+    pub async fn receive_with_progress(
+        mut self,
+        incoming_root: impl Into<PathBuf>,
+        cancellation: &TransferCancellation,
+        mut on_progress: impl FnMut(TransferProgress),
+    ) -> Result<PathBuf, TransferSessionError> {
+        let mut receiver = TransferReceiver::begin(incoming_root, self.manifest.clone())?;
+        on_progress(receiver.progress());
+        write_frame(
+            &mut self.response,
+            &Message::TransferResume {
+                id: self.manifest.id,
+                offsets: receiver.resume_offsets(),
+            },
+        )
+        .await?;
+        while receiver
+            .resume_offsets()
+            .iter()
+            .zip(&self.manifest.entries)
+            .any(|(offset, entry)| *offset < entry.size)
+        {
+            if cancellation.is_cancelled() {
+                write_frame(
+                    &mut self.response,
+                    &Message::CancelTransfer {
+                        id: self.manifest.id,
+                    },
+                )
+                .await?;
+                self.response
+                    .finish()
+                    .map_err(|_| TransferSessionError::Stream)?;
+                return Err(TransferSessionError::Cancelled);
+            }
+            let message = read_frame(&mut self.receive).await?;
+            if matches!(message, Message::CancelTransfer { id } if id == self.manifest.id) {
+                return Err(TransferSessionError::Cancelled);
+            }
+            let Message::TransferChunk(chunk) = message else {
+                return Err(TransferSessionError::UnexpectedMessage);
+            };
+            receiver.accept(&chunk)?;
+            on_progress(receiver.progress());
+        }
+        let destination = receiver.finish()?;
+        write_frame(
+            &mut self.response,
+            &Message::Acknowledge {
+                id: self.manifest.id,
+            },
+        )
+        .await?;
+        self.response
+            .finish()
+            .map_err(|_| TransferSessionError::Stream)?;
+        Ok(destination)
+    }
 }
 
 impl BlobRequest {
@@ -168,7 +250,9 @@ pub async fn receive_clipboard_offer(
 ) -> Result<ClipboardOffer, PeerSessionError> {
     match receive_peer_request(connection).await? {
         IncomingPeerRequest::Clipboard(offer) => Ok(offer),
-        IncomingPeerRequest::Blob(_) => Err(PeerSessionError::UnexpectedMessage),
+        IncomingPeerRequest::Blob(_) | IncomingPeerRequest::Transfer(_) => {
+            Err(PeerSessionError::UnexpectedMessage)
+        }
     }
 }
 
@@ -192,6 +276,11 @@ pub async fn receive_peer_request(
             hash,
             offset,
             response,
+        })),
+        Message::TransferOffer(manifest) => Ok(IncomingPeerRequest::Transfer(TransferRequest {
+            manifest,
+            response,
+            receive,
         })),
         _ => Err(IncomingRequestError::UnexpectedMessage),
     }
@@ -349,7 +438,9 @@ pub async fn serve_blob(
 ) -> Result<(), BlobSessionError> {
     match receive_peer_request(connection).await? {
         IncomingPeerRequest::Blob(request) => request.serve(blob_root).await,
-        IncomingPeerRequest::Clipboard(_) => Err(BlobSessionError::UnexpectedMessage),
+        IncomingPeerRequest::Clipboard(_) | IncomingPeerRequest::Transfer(_) => {
+            Err(BlobSessionError::UnexpectedMessage)
+        }
     }
 }
 
@@ -552,55 +643,29 @@ pub async fn receive_transfer_with_progress(
     connection: &Connection,
     incoming_root: impl Into<PathBuf>,
     cancellation: &TransferCancellation,
-    mut on_progress: impl FnMut(TransferProgress),
+    on_progress: impl FnMut(TransferProgress),
 ) -> Result<PathBuf, TransferSessionError> {
-    let (mut send, mut receive) = connection
-        .accept_bi()
+    match receive_peer_request(connection)
         .await
-        .map_err(|_| TransferSessionError::Stream)?;
-    let Message::TransferOffer(manifest) = read_frame(&mut receive).await? else {
-        return Err(TransferSessionError::UnexpectedMessage);
-    };
-    let mut receiver = TransferReceiver::begin(incoming_root, manifest.clone())?;
-    on_progress(receiver.progress());
-    write_frame(
-        &mut send,
-        &Message::TransferResume {
-            id: manifest.id,
-            offsets: receiver.resume_offsets(),
-        },
-    )
-    .await?;
-    while receiver
-        .resume_offsets()
-        .iter()
-        .zip(&manifest.entries)
-        .any(|(offset, entry)| *offset < entry.size)
+        .map_err(TransferSessionError::Incoming)?
     {
-        if cancellation.is_cancelled() {
-            write_frame(&mut send, &Message::CancelTransfer { id: manifest.id }).await?;
-            send.finish().map_err(|_| TransferSessionError::Stream)?;
-            return Err(TransferSessionError::Cancelled);
+        IncomingPeerRequest::Transfer(request) => {
+            request
+                .receive_with_progress(incoming_root, cancellation, on_progress)
+                .await
         }
-        let message = read_frame(&mut receive).await?;
-        if matches!(message, Message::CancelTransfer { id } if id == manifest.id) {
-            return Err(TransferSessionError::Cancelled);
+        IncomingPeerRequest::Clipboard(_) | IncomingPeerRequest::Blob(_) => {
+            Err(TransferSessionError::UnexpectedMessage)
         }
-        let Message::TransferChunk(chunk) = message else {
-            return Err(TransferSessionError::UnexpectedMessage);
-        };
-        receiver.accept(&chunk)?;
-        on_progress(receiver.progress());
     }
-    let destination = receiver.finish()?;
-    write_frame(&mut send, &Message::Acknowledge { id: manifest.id }).await?;
-    send.finish().map_err(|_| TransferSessionError::Stream)?;
-    Ok(destination)
 }
 
 /// File/folder QUIC session failures.
 #[derive(Debug, Error)]
 pub enum TransferSessionError {
+    /// Incoming stream routing failed.
+    #[error(transparent)]
+    Incoming(#[from] IncomingRequestError),
     /// Protocol framing failed.
     #[error("file transfer protocol frame failed")]
     Frame(#[from] FrameError),
