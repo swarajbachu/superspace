@@ -1,4 +1,4 @@
-//! Durable SQLite and content-addressed storage for Superspace.
+//! Durable `SQLite` and content-addressed storage for Superspace.
 
 mod blob;
 mod clipboard;

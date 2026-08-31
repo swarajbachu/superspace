@@ -71,7 +71,7 @@ pub struct CommandInvocation {
     pub args: Vec<String>,
 }
 
-/// SQLite-backed productivity collection.
+/// `SQLite`-backed productivity collection.
 pub struct ProductivityStore {
     connection: Connection,
 }

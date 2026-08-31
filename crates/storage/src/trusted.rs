@@ -39,7 +39,7 @@ impl TrustedDevice {
     }
 }
 
-/// Dedicated SQLite store for paired identities and revocation state.
+/// Dedicated `SQLite` store for paired identities and revocation state.
 pub struct TrustedDeviceStore {
     connection: Connection,
 }
@@ -49,7 +49,7 @@ impl TrustedDeviceStore {
     ///
     /// # Errors
     ///
-    /// Returns [`TrustStoreError`] when SQLite cannot open or migrate the database.
+    /// Returns [`TrustStoreError`] when `SQLite` cannot open or migrate the database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TrustStoreError> {
         let connection = Connection::open(path)?;
         Self::configure(&connection)?;
@@ -61,7 +61,7 @@ impl TrustedDeviceStore {
     ///
     /// # Errors
     ///
-    /// Returns [`TrustStoreError`] when SQLite cannot initialize the schema.
+    /// Returns [`TrustStoreError`] when `SQLite` cannot initialize the schema.
     pub fn memory() -> Result<Self, TrustStoreError> {
         let connection = Connection::open_in_memory()?;
         Self::configure(&connection)?;
@@ -239,7 +239,7 @@ impl TrustedDeviceStore {
 /// Trusted-device validation and persistence failures.
 #[derive(Debug, Error)]
 pub enum TrustStoreError {
-    /// SQLite operation failed.
+    /// `SQLite` operation failed.
     #[error("trusted-device database operation failed")]
     Database(#[from] rusqlite::Error),
     /// A supplied or persisted device record is malformed.

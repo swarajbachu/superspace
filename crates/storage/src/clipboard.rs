@@ -99,7 +99,7 @@ pub enum Retention {
 /// Storage failures surfaced without leaking SQL statements or user content.
 #[derive(Debug, Error)]
 pub enum StorageError {
-    /// SQLite operation failed.
+    /// `SQLite` operation failed.
     #[error("clipboard database operation failed")]
     Database(#[from] rusqlite::Error),
     /// A database row contained an unknown kind.
@@ -110,7 +110,7 @@ pub enum StorageError {
     InvalidEntry,
 }
 
-/// SQLite-backed clipboard history and search index.
+/// `SQLite`-backed clipboard history and search index.
 pub struct ClipboardStore {
     connection: Connection,
 }
@@ -120,7 +120,7 @@ impl ClipboardStore {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] when SQLite cannot open or migrate the database.
+    /// Returns [`StorageError`] when `SQLite` cannot open or migrate the database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let connection = Connection::open(path)?;
         Self::configure(&connection)?;
@@ -132,7 +132,7 @@ impl ClipboardStore {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] when SQLite cannot initialize the schema.
+    /// Returns [`StorageError`] when `SQLite` cannot initialize the schema.
     pub fn memory() -> Result<Self, StorageError> {
         let connection = Connection::open_in_memory()?;
         Self::configure(&connection)?;

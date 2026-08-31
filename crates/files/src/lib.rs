@@ -336,7 +336,7 @@ pub enum FileSearchError {
     /// A platform path cannot be represented in the portable index.
     #[error("file search path is not valid UTF-8")]
     NonUtf8Path,
-    /// File size cannot be represented by SQLite.
+    /// File size cannot be represented by `SQLite`.
     #[error("file is too large to index")]
     FileTooLarge,
     /// Index generation counter overflowed.
