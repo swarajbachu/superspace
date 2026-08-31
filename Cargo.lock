@@ -5185,6 +5185,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "superspace-calculator"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "superspace-core"
 version = "0.1.0"
 dependencies = [
