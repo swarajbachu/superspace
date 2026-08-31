@@ -327,9 +327,8 @@ impl EntityInputHandler for SearchInput {
             .map(|range| self.range_from_utf16(range))
             .or_else(|| self.marked_range.clone())
             .unwrap_or_else(|| self.selected_range.clone());
-        self.content =
-            (self.content[..range.start].to_owned() + new_text + &self.content[range.end..]).into();
-        let cursor = range.start + new_text.len();
+        let (content, cursor) = replace_text(&self.content, range, new_text);
+        self.content = content.into();
         self.selected_range = cursor..cursor;
         self.marked_range = None;
         cx.emit(InputChanged);
@@ -600,5 +599,33 @@ impl Render for SearchInput {
 impl Focusable for SearchInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+fn replace_text(content: &str, range: Range<usize>, new_text: &str) -> (String, usize) {
+    let start = clamped_char_boundary(content, range.start);
+    let end = clamped_char_boundary(content, range.end).max(start);
+    (
+        content[..start].to_owned() + new_text + &content[end..],
+        start + new_text.len(),
+    )
+}
+
+fn clamped_char_boundary(content: &str, offset: usize) -> usize {
+    let mut offset = offset.min(content.len());
+    while !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_text;
+
+    #[test]
+    fn stale_platform_range_is_clamped_after_input_is_cleared() {
+        assert_eq!(replace_text("", 9..9, "5"), ("5".into(), 1));
+        assert_eq!(replace_text("é", 1..9, "x"), ("x".into(), 1));
     }
 }
