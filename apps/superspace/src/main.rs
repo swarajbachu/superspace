@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
@@ -27,10 +28,72 @@ fn main() -> Result<()> {
             launch_app(&id)?;
         }
         Some("productivity") => productivity(arguments)?,
+        Some("files") => files(arguments)?,
         Some("--version" | "-V") => println!("superspace {}", env!("CARGO_PKG_VERSION")),
         Some(command) => bail!("unknown command: {command}"),
     }
     Ok(())
+}
+
+fn files(mut arguments: impl Iterator<Item = String>) -> Result<()> {
+    let action = arguments
+        .next()
+        .context("usage: superspace files <index|search|preview|share-path> [arguments]")?;
+    match action.as_str() {
+        "index" => {
+            let root = required(&mut arguments, "scope root")?;
+            let scope = superspace_files::SearchScope {
+                root: PathBuf::from(root),
+                include_hidden: false,
+                ignores: arguments.collect(),
+            };
+            let mut index = open_file_index()?;
+            let report = index.refresh(&scope, &AtomicBool::new(false))?;
+            println!(
+                "scanned={} updated={} removed={} skipped={}",
+                report.scanned, report.updated, report.removed, report.skipped
+            );
+        }
+        "search" => {
+            let query = arguments.collect::<Vec<_>>().join(" ");
+            if query.is_empty() {
+                bail!("usage: superspace files search <query>");
+            }
+            for result in open_file_index()?.search(&query, None, 100)? {
+                println!("{}\t{}", result.size, result.path.display());
+            }
+        }
+        "preview" => {
+            let path = required(&mut arguments, "file path")?;
+            no_more(arguments)?;
+            match superspace_files::preview(path)? {
+                superspace_files::FilePreview::Text { content, truncated } => {
+                    print!("{content}");
+                    if truncated {
+                        eprintln!("\n[preview truncated]");
+                    }
+                }
+                superspace_files::FilePreview::Binary { size } => {
+                    println!("binary file ({size} bytes)");
+                }
+            }
+        }
+        "share-path" => {
+            let path = required(&mut arguments, "file path")?;
+            no_more(arguments)?;
+            println!("{}", superspace_files::action_path(path)?.display());
+        }
+        _ => bail!("usage: superspace files <index|search|preview|share-path> [arguments]"),
+    }
+    Ok(())
+}
+
+fn open_file_index() -> Result<superspace_files::FileIndex> {
+    let database = data_root().join("files.sqlite");
+    if let Some(parent) = database.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    superspace_files::FileIndex::open(database).map_err(Into::into)
 }
 
 fn productivity(mut arguments: impl Iterator<Item = String>) -> Result<()> {
@@ -174,9 +237,11 @@ fn no_more(mut arguments: impl Iterator<Item = String>) -> Result<()> {
 }
 
 fn productivity_database() -> PathBuf {
-    std::env::var_os("SUPERSPACE_DATA_DIR")
-        .map_or_else(default_data_root, PathBuf::from)
-        .join("productivity.sqlite")
+    data_root().join("productivity.sqlite")
+}
+
+fn data_root() -> PathBuf {
+    std::env::var_os("SUPERSPACE_DATA_DIR").map_or_else(default_data_root, PathBuf::from)
 }
 
 fn default_data_root() -> PathBuf {

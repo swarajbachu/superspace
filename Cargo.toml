@@ -7,6 +7,7 @@ members = [
     "crates/calculator",
     "crates/core",
     "crates/extensions",
+    "crates/files",
     "crates/network",
     "crates/platform",
     "crates/protocol",
@@ -32,6 +33,7 @@ ciborium = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10"
 fs2 = "0.4"
+ignore = "0.4"
 mdns-sd = { version = "0.21", default-features = false }
 png = "0.18"
 plist = "1.8"
