@@ -253,33 +253,78 @@ pub fn resolve_command(item: &Item, query: &str) -> Result<CommandInvocation, Pr
 }
 
 /// A built-in emoji search result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Emoji {
     /// Unicode grapheme.
     pub value: &'static str,
     /// Human-readable name.
     pub name: &'static str,
     /// Search aliases.
-    pub keywords: &'static [&'static str],
+    pub keywords: Vec<&'static str>,
 }
 
 /// Search the built-in emoji catalog.
 #[must_use]
 pub fn search_emoji(query: &str, limit: usize) -> Vec<Emoji> {
     let query = query.trim().to_ascii_lowercase();
-    EMOJI
-        .iter()
-        .copied()
-        .filter(|emoji| {
-            query.is_empty()
-                || emoji.name.contains(&query)
-                || emoji
-                    .keywords
-                    .iter()
-                    .any(|keyword| keyword.contains(&query))
-        })
+    let mut matches = emojis::iter()
+        .filter_map(|emoji| emoji_match_score(emoji, &query).map(|score| (score, emoji)))
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|(score, _)| *score);
+    matches
+        .into_iter()
         .take(limit)
+        .map(|(_, emoji)| emoji)
+        .map(|emoji| Emoji {
+            value: emoji.as_str(),
+            name: emoji.name(),
+            keywords: emoji
+                .shortcodes()
+                .chain(extra_emoji_keywords(emoji.as_str()).iter().copied())
+                .collect(),
+        })
         .collect()
+}
+
+fn emoji_match_score(emoji: &emojis::Emoji, query: &str) -> Option<u8> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let aliases = extra_emoji_keywords(emoji.as_str());
+    if aliases.contains(&query) {
+        Some(0)
+    } else if emoji.shortcodes().any(|shortcode| shortcode == query) {
+        Some(1)
+    } else if emoji.name() == query {
+        Some(2)
+    } else if aliases.iter().any(|keyword| keyword.contains(query)) {
+        Some(3)
+    } else if emoji
+        .shortcodes()
+        .any(|shortcode| shortcode.contains(query))
+    {
+        Some(4)
+    } else if emoji.name().contains(query) {
+        Some(5)
+    } else {
+        None
+    }
+}
+
+fn extra_emoji_keywords(value: &str) -> &'static [&'static str] {
+    match value {
+        "😀" => &["smile", "happy"],
+        "😂" => &["laugh", "lol"],
+        "❤️" => &["love", "like"],
+        "👍" => &["yes", "approve", "like"],
+        "🎉" => &["celebrate", "tada"],
+        "🚀" => &["launch", "ship"],
+        "✅" => &["done", "success"],
+        "🔥" => &["hot", "lit"],
+        "👀" => &["look", "watch"],
+        "🙏" => &["thanks", "please"],
+        _ => &[],
+    }
 }
 
 /// Productivity persistence and validation failures.
@@ -399,59 +444,6 @@ fn percent_encode(bytes: &[u8]) -> String {
     output
 }
 
-const EMOJI: &[Emoji] = &[
-    Emoji {
-        value: "😀",
-        name: "grinning face",
-        keywords: &["smile", "happy"],
-    },
-    Emoji {
-        value: "😂",
-        name: "face with tears of joy",
-        keywords: &["laugh", "lol"],
-    },
-    Emoji {
-        value: "❤️",
-        name: "red heart",
-        keywords: &["love", "like"],
-    },
-    Emoji {
-        value: "👍",
-        name: "thumbs up",
-        keywords: &["yes", "approve", "like"],
-    },
-    Emoji {
-        value: "🎉",
-        name: "party popper",
-        keywords: &["celebrate", "tada"],
-    },
-    Emoji {
-        value: "🚀",
-        name: "rocket",
-        keywords: &["launch", "ship"],
-    },
-    Emoji {
-        value: "✅",
-        name: "check mark button",
-        keywords: &["done", "success"],
-    },
-    Emoji {
-        value: "🔥",
-        name: "fire",
-        keywords: &["hot", "lit"],
-    },
-    Emoji {
-        value: "👀",
-        name: "eyes",
-        keywords: &["look", "watch"],
-    },
-    Emoji {
-        value: "🙏",
-        name: "folded hands",
-        keywords: &["thanks", "please"],
-    },
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,6 +508,7 @@ mod tests {
 
     #[test]
     fn emoji_search_uses_names_and_aliases() {
+        assert_eq!(search_emoji("", 256).len(), 256);
         assert_eq!(search_emoji("ship", 5)[0].value, "🚀");
         assert_eq!(search_emoji("like", 1)[0].value, "❤️");
     }

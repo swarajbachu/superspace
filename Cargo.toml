@@ -29,6 +29,7 @@ anyhow = "1.0"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 blake3 = { version = "1.8", features = ["pure"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+emojis = "0.9"
 ciborium = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10"
