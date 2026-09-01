@@ -71,16 +71,16 @@ pub fn install(cx: &mut App) {
 pub fn for_kind(kind: ThemeKind) -> Theme {
     match kind {
         ThemeKind::Graphite => Theme {
-            background: hsla(0.64, 0.08, 0.045, 0.96),
-            surface: hsla(0.0, 0.0, 1.0, 0.05),
-            selected: hsla(0.0, 0.0, 1.0, 0.11),
-            hovered: hsla(0.0, 0.0, 1.0, 0.05),
-            text: hsla(0.0, 0.0, 0.94, 1.0),
-            muted: hsla(0.64, 0.02, 0.66, 1.0),
+            background: hsla(0.64, 0.08, 0.07, 0.80),
+            surface: hsla(0.0, 0.0, 1.0, 0.075),
+            selected: hsla(0.0, 0.0, 1.0, 0.14),
+            hovered: hsla(0.0, 0.0, 1.0, 0.085),
+            text: hsla(0.0, 0.0, 0.95, 1.0),
+            muted: hsla(0.64, 0.02, 0.70, 1.0),
             accent: hsla(0.59, 0.76, 0.67, 1.0),
-            tile: hsla(0.0, 0.0, 1.0, 0.06),
-            shadow: hsla(0.0, 0.0, 0.0, 0.48),
-            divider: hsla(0.0, 0.0, 1.0, 0.09),
+            tile: hsla(0.0, 0.0, 1.0, 0.085),
+            shadow: hsla(0.0, 0.0, 0.0, 0.42),
+            divider: hsla(0.0, 0.0, 1.0, 0.075),
         },
         ThemeKind::Midnight => Theme {
             background: hsla(0.0, 0.0, 0.018, 0.82),

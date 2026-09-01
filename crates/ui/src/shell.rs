@@ -6,7 +6,7 @@ use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, point, px, size, svg,
+    StyledImage as _, Window, div, img, point, px, svg,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue};
 use superspace_core::LauncherPreferences;
@@ -571,15 +571,10 @@ impl Palette {
     fn enter_surface(
         &mut self,
         surface: PaletteSurface,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.surface = surface;
-        window.resize(if surface == PaletteSurface::Clipboard {
-            size(px(860.0), px(540.0))
-        } else {
-            size(px(680.0), px(420.0))
-        });
         self.notice = None;
         let placeholder = match surface {
             PaletteSurface::Launcher => "Search apps, files, and tools…",
