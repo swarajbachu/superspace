@@ -55,6 +55,8 @@ pub struct Theme {
     pub tile: Hsla,
     /// Ambient window shadow.
     pub shadow: Hsla,
+    /// Quiet divider between structural regions.
+    pub divider: Hsla,
 }
 
 impl Global for Theme {}
@@ -69,15 +71,16 @@ pub fn install(cx: &mut App) {
 pub fn for_kind(kind: ThemeKind) -> Theme {
     match kind {
         ThemeKind::Graphite => Theme {
-            background: hsla(0.64, 0.08, 0.055, 0.40),
+            background: hsla(0.64, 0.08, 0.045, 0.96),
             surface: hsla(0.0, 0.0, 1.0, 0.05),
-            selected: hsla(0.0, 0.0, 1.0, 0.10),
+            selected: hsla(0.0, 0.0, 1.0, 0.11),
             hovered: hsla(0.0, 0.0, 1.0, 0.05),
             text: hsla(0.0, 0.0, 0.94, 1.0),
-            muted: hsla(0.64, 0.02, 0.64, 1.0),
+            muted: hsla(0.64, 0.02, 0.66, 1.0),
             accent: hsla(0.59, 0.76, 0.67, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.06),
-            shadow: hsla(0.0, 0.0, 0.0, 0.58),
+            shadow: hsla(0.0, 0.0, 0.0, 0.48),
+            divider: hsla(0.0, 0.0, 1.0, 0.09),
         },
         ThemeKind::Midnight => Theme {
             background: hsla(0.0, 0.0, 0.018, 0.82),
@@ -89,9 +92,10 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             accent: hsla(0.56, 0.72, 0.68, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.07),
             shadow: hsla(0.0, 0.0, 0.0, 0.68),
+            divider: hsla(0.0, 0.0, 1.0, 0.08),
         },
         ThemeKind::Dawn => Theme {
-            background: hsla(0.10, 0.10, 0.94, 0.74),
+            background: hsla(0.10, 0.10, 0.96, 0.97),
             surface: hsla(0.0, 0.0, 1.0, 0.22),
             selected: hsla(0.0, 0.0, 1.0, 0.40),
             hovered: hsla(0.0, 0.0, 1.0, 0.26),
@@ -100,6 +104,7 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             accent: hsla(0.60, 0.58, 0.46, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.36),
             shadow: hsla(0.66, 0.10, 0.12, 0.26),
+            divider: hsla(0.66, 0.08, 0.22, 0.12),
         },
     }
 }
