@@ -1260,7 +1260,7 @@ fn clipboard_view(
                 .flex()
                 .child(
                     div()
-                        .w(px(330.0))
+                        .w(px(306.0))
                         .min_h_0()
                         .px(px(8.0))
                         .pt(px(10.0))
@@ -1390,7 +1390,7 @@ fn clipboard_row(
     let entry = entry.clone();
     div()
         .id(("clipboard-row", index))
-        .h(px(44.0))
+        .h(px(48.0))
         .px(px(8.0))
         .flex()
         .items_center()
@@ -1420,30 +1420,45 @@ fn clipboard_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_size(px(12.0))
-                .font_weight(FontWeight::MEDIUM)
-                .child(entry.title),
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(entry.title),
+                )
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(10.0))
+                        .text_color(colors.muted)
+                        .child(entry.subtitle),
+                ),
         )
         .when(entry.favorite, |row| {
             row.child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(px(9.0))
                     .text_color(colors.muted)
-                    .child("•"),
+                    .child("PINNED"),
             )
         })
         .into_any_element()
 }
 
 fn clipboard_preview(preview: ClipboardPreview, colors: theme::Theme) -> AnyElement {
-    let pinned = if preview.pinned {
-        "Pinned"
-    } else {
-        "Not pinned"
-    };
+    let pin = if preview.pinned { " · Pinned" } else { "" };
+    let metadata = format!(
+        "{} · {} characters · {} words · {}{}",
+        preview.content_type, preview.characters, preview.words, preview.age, pin
+    );
     div()
         .size_full()
         .min_h_0()
@@ -1454,7 +1469,8 @@ fn clipboard_preview(preview: ClipboardPreview, colors: theme::Theme) -> AnyElem
                 .id("clipboard-preview-content")
                 .flex_1()
                 .min_h_0()
-                .p(px(18.0))
+                .px(px(18.0))
+                .py(px(16.0))
                 .overflow_y_scroll()
                 .child(
                     div()
@@ -1474,53 +1490,30 @@ fn clipboard_preview(preview: ClipboardPreview, colors: theme::Theme) -> AnyElem
         )
         .child(
             div()
+                .h(px(56.0))
                 .px(px(18.0))
-                .py(px(10.0))
                 .bg(colors.surface)
                 .border_t_1()
                 .border_color(colors.divider)
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap(px(3.0))
                 .child(
                     div()
-                        .h(px(24.0))
-                        .flex()
-                        .items_center()
                         .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(colors.muted)
-                        .child("Information"),
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(preview.source),
                 )
-                .child(info_row("Source", preview.source, colors))
-                .child(info_row("Content type", preview.content_type, colors))
-                .child(info_row(
-                    "Characters",
-                    preview.characters.to_string(),
-                    colors,
-                ))
-                .child(info_row("Words", preview.words.to_string(), colors))
-                .child(info_row("Copied", preview.age, colors))
-                .child(info_row("Pin", pinned, colors)),
-        )
-        .into_any_element()
-}
-
-fn info_row(label: &'static str, value: impl Into<String>, colors: theme::Theme) -> AnyElement {
-    div()
-        .h(px(25.0))
-        .flex()
-        .items_center()
-        .justify_between()
-        .border_t_1()
-        .border_color(colors.divider)
-        .text_size(px(11.0))
-        .child(div().text_color(colors.muted).child(label))
-        .child(
-            div()
-                .max_w(px(260.0))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .font_weight(FontWeight::MEDIUM)
-                .child(value.into()),
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(10.0))
+                        .text_color(colors.muted)
+                        .child(metadata),
+                ),
         )
         .into_any_element()
 }
@@ -1768,7 +1761,8 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
         "tool:uuid" => "icons/hash.svg",
         "tool:timestamp" => "icons/clock.svg",
         _ => match entry.kind {
-            PaletteEntryKind::File | PaletteEntryKind::Clipboard => "icons/file.svg",
+            PaletteEntryKind::File => "icons/file.svg",
+            PaletteEntryKind::Clipboard => "icons/clipboard.svg",
             PaletteEntryKind::Calculation => "icons/calculator.svg",
             PaletteEntryKind::Command | PaletteEntryKind::Tool => "icons/command.svg",
             PaletteEntryKind::Application | PaletteEntryKind::Emoji => unreachable!(),
