@@ -5,6 +5,8 @@ mod clipboard_history;
 #[cfg(feature = "desktop")]
 mod currency;
 #[cfg(feature = "desktop")]
+mod icons;
+#[cfg(feature = "desktop")]
 mod mini_tools;
 mod model;
 #[cfg(feature = "desktop")]
@@ -32,26 +34,28 @@ use gpui::{
 /// Panics if GPUI cannot create the palette window after application startup.
 #[cfg(feature = "desktop")]
 pub fn run() {
-    gpui_platform::application().run(|cx: &mut App| {
-        theme::install(cx);
-        search_input::init(cx);
-        let bounds = Bounds::centered(None, size(px(680.0), px(420.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(620.0), px(380.0))),
-                titlebar: None,
-                window_background: WindowBackgroundAppearance::Blurred,
-                kind: WindowKind::PopUp,
-                is_resizable: false,
-                is_minimizable: false,
-                ..WindowOptions::default()
-            },
-            |window, cx| cx.new(|cx| shell::Palette::new(window, cx)),
-        )
-        .expect("open Superspace palette");
-        cx.activate(true);
-    });
+    gpui_platform::application()
+        .with_assets(icons::Icons)
+        .run(|cx: &mut App| {
+            theme::install(cx);
+            search_input::init(cx);
+            let bounds = Bounds::centered(None, size(px(680.0), px(420.0)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(620.0), px(380.0))),
+                    titlebar: None,
+                    window_background: WindowBackgroundAppearance::Blurred,
+                    kind: WindowKind::PopUp,
+                    is_resizable: false,
+                    is_minimizable: false,
+                    ..WindowOptions::default()
+                },
+                |window, cx| cx.new(|cx| shell::Palette::new(window, cx)),
+            )
+            .expect("open Superspace palette");
+            cx.activate(true);
+        });
 }
 
 /// Explain how to enable the headed build when compiled without native dependencies.

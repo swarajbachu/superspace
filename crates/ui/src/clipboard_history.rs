@@ -15,6 +15,18 @@ pub(crate) struct ClipboardHistory {
     entries: HashMap<String, ClipboardEntry>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ClipboardPreview {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) content_type: &'static str,
+    pub(crate) age: String,
+    pub(crate) source: String,
+    pub(crate) characters: usize,
+    pub(crate) words: usize,
+    pub(crate) pinned: bool,
+}
+
 impl ClipboardHistory {
     pub(crate) fn open(root: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
@@ -27,12 +39,16 @@ impl ClipboardHistory {
         })
     }
 
-    pub(crate) fn search(&mut self, query: &str) -> Result<Vec<PaletteEntry>, String> {
+    pub(crate) fn search(
+        &mut self,
+        query: &str,
+        kind: Option<ClipboardKind>,
+    ) -> Result<Vec<PaletteEntry>, String> {
         let entries = self
             .store
             .query(&ClipboardQuery {
                 text: query,
-                kind: None,
+                kind,
                 include_sensitive: false,
                 limit: 250,
             })
@@ -85,6 +101,30 @@ impl ClipboardHistory {
                 }
             })
             .collect())
+    }
+
+    pub(crate) fn preview(&self, id: &str) -> Option<ClipboardPreview> {
+        let entry = self.entries.get(id)?;
+        let (title, content_type) = presentation(entry);
+        let body = entry.text.clone().unwrap_or_else(|| match entry.kind {
+            ClipboardKind::Image => "Image preview".into(),
+            ClipboardKind::Files => "Copied files".into(),
+            ClipboardKind::Text | ClipboardKind::Html | ClipboardKind::Rtf => title.clone(),
+        });
+        Some(ClipboardPreview {
+            title,
+            characters: body.chars().count(),
+            words: body.split_whitespace().count(),
+            body,
+            content_type,
+            age: relative_age(now_ms(), entry.created_at),
+            source: entry
+                .source
+                .application_id
+                .clone()
+                .unwrap_or_else(|| "Local clipboard".into()),
+            pinned: entry.pinned_at.is_some(),
+        })
     }
 
     pub(crate) fn restore(&self, id: &str) -> Result<(), String> {

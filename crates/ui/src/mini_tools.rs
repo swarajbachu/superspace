@@ -167,8 +167,8 @@ fn builtin_entries() -> Vec<PaletteEntry> {
     [
         (
             "tool:currency",
-            "Currency & Crypto",
-            "Live rates with offline cache",
+            "Currency Converter",
+            "Fiat and crypto with live rates",
             "open-currency",
         ),
         (
@@ -199,8 +199,8 @@ fn builtin_entries() -> Vec<PaletteEntry> {
         icon: None,
         keywords: vec![title.into(), subtitle.into(), "mini tool".into()],
         preview: subtitle.into(),
-        frequency: 100,
-        favorite: true,
+        frequency: 40,
+        favorite: false,
         actions: vec![ActionItem {
             id: action.into(),
             title: title.into(),

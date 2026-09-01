@@ -6,16 +6,17 @@ use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, point, px,
+    StyledImage as _, Window, div, img, point, px, size, svg,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue};
 use superspace_core::LauncherPreferences;
 use superspace_platform::AppDescriptor;
+use superspace_storage::ClipboardKind;
 
 use crate::{
     ActionItem, PaletteEntry, PaletteEntryKind, PaletteEvent, PaletteKey, PaletteMode,
     PaletteModel,
-    clipboard_history::ClipboardHistory,
+    clipboard_history::{ClipboardHistory, ClipboardPreview},
     currency::{self, Conversion},
     mini_tools::MiniTools,
     motion,
@@ -28,9 +29,46 @@ enum PaletteSurface {
     #[default]
     Launcher,
     Clipboard,
-    Tools,
     Emoji,
     Currency,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ClipboardFilter {
+    #[default]
+    All,
+    Text,
+    Images,
+    Files,
+}
+
+impl ClipboardFilter {
+    const fn next(self) -> Self {
+        match self {
+            Self::All => Self::Text,
+            Self::Text => Self::Images,
+            Self::Images => Self::Files,
+            Self::Files => Self::All,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All Types",
+            Self::Text => "Text",
+            Self::Images => "Images",
+            Self::Files => "Files",
+        }
+    }
+
+    const fn kind(self) -> Option<ClipboardKind> {
+        match self {
+            Self::All => None,
+            Self::Text => Some(ClipboardKind::Text),
+            Self::Images => Some(ClipboardKind::Image),
+            Self::Files => Some(ClipboardKind::Files),
+        }
+    }
 }
 
 /// Main command palette state.
@@ -48,6 +86,7 @@ pub struct Palette {
     files: HashMap<String, PathBuf>,
     calculations: HashMap<String, String>,
     clipboard: Option<ClipboardHistory>,
+    clipboard_filter: ClipboardFilter,
     mini_tools: Option<MiniTools>,
     currency_query: Option<CurrencyQuery>,
     currency_input: Option<String>,
@@ -109,15 +148,14 @@ impl Palette {
             "Search, pin, restore, and remove copied items",
             "open-clipboard",
         ));
-        entries.push(builtin_entry(
-            "builtin:tools",
-            "Mini Tools",
-            "Currency, emoji, UUIDs, snippets, links, notes, and commands",
-            "open-tools",
-        ));
-        let base_entries = entries.clone();
         let clipboard = ClipboardHistory::open(&data_root()).ok();
-        let mini_tools = MiniTools::open(&data_root()).ok();
+        let mut mini_tools = MiniTools::open(&data_root()).ok();
+        if let Some(tools) = mini_tools.as_mut()
+            && let Ok(tool_entries) = tools.entries("")
+        {
+            entries.extend(tool_entries);
+        }
+        let base_entries = entries.clone();
 
         cx.subscribe(&search_input, |palette, input, _: &InputChanged, cx| {
             palette.model.set_query(input.read(cx).text().to_owned());
@@ -142,6 +180,7 @@ impl Palette {
             files: HashMap::new(),
             calculations: HashMap::new(),
             clipboard,
+            clipboard_filter: ClipboardFilter::default(),
             mini_tools,
             currency_query: None,
             currency_input: None,
@@ -159,7 +198,7 @@ impl Palette {
                 entry_id,
                 action_id,
             } => {
-                if self.invoke(&entry_id, &action_id, cx) {
+                if self.invoke(&entry_id, &action_id, window, cx) {
                     window.remove_window();
                 }
             }
@@ -204,7 +243,7 @@ impl Palette {
             && self.model.mode() == PaletteMode::Results
             && self.surface != PaletteSurface::Launcher
         {
-            self.enter_surface(PaletteSurface::Launcher, cx);
+            self.enter_surface(PaletteSurface::Launcher, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -221,18 +260,21 @@ impl Palette {
         clippy::too_many_lines,
         reason = "central action routing keeps palette side effects explicit"
     )]
-    fn invoke(&mut self, entry_id: &str, action_id: &str, cx: &mut Context<Self>) -> bool {
+    fn invoke(
+        &mut self,
+        entry_id: &str,
+        action_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if action_id == "open-clipboard" {
-            self.enter_surface(PaletteSurface::Clipboard, cx);
-            false
-        } else if action_id == "open-tools" {
-            self.enter_surface(PaletteSurface::Tools, cx);
+            self.enter_surface(PaletteSurface::Clipboard, window, cx);
             false
         } else if action_id == "open-emoji" {
-            self.enter_surface(PaletteSurface::Emoji, cx);
+            self.enter_surface(PaletteSurface::Emoji, window, cx);
             false
         } else if action_id == "open-currency" {
-            self.enter_surface(PaletteSurface::Currency, cx);
+            self.enter_surface(PaletteSurface::Currency, window, cx);
             false
         } else if action_id == "restore-clipboard" {
             match self
@@ -438,27 +480,11 @@ impl Palette {
                 .clipboard
                 .as_mut()
                 .ok_or_else(|| "clipboard history is unavailable".to_owned())
-                .and_then(|history| history.search(&query));
+                .and_then(|history| history.search(&query, self.clipboard_filter.kind()));
             match entries {
                 Ok(entries) => self.model.replace_entries(entries),
                 Err(error) => {
                     self.notice = Some(format!("Could not load clipboard history: {error}"));
-                    self.model.replace_entries(Vec::new());
-                }
-            }
-            return;
-        }
-        if self.surface == PaletteSurface::Tools {
-            let query = self.model.query().trim().to_owned();
-            let entries = self
-                .mini_tools
-                .as_mut()
-                .ok_or_else(|| "mini tools are unavailable".to_owned())
-                .and_then(|tools| tools.entries(&query));
-            match entries {
-                Ok(entries) => self.model.replace_entries(entries),
-                Err(error) => {
-                    self.notice = Some(format!("Could not load mini tools: {error}"));
                     self.model.replace_entries(Vec::new());
                 }
             }
@@ -542,13 +568,22 @@ impl Palette {
         self.model.replace_entries(entries);
     }
 
-    fn enter_surface(&mut self, surface: PaletteSurface, cx: &mut Context<Self>) {
+    fn enter_surface(
+        &mut self,
+        surface: PaletteSurface,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.surface = surface;
+        window.resize(if surface == PaletteSurface::Clipboard {
+            size(px(860.0), px(540.0))
+        } else {
+            size(px(680.0), px(420.0))
+        });
         self.notice = None;
         let placeholder = match surface {
             PaletteSurface::Launcher => "Search apps, files, and tools…",
             PaletteSurface::Clipboard => "Search clipboard history…",
-            PaletteSurface::Tools => "Search mini tools…",
             PaletteSurface::Emoji => "Search emoji by name…",
             PaletteSurface::Currency => "Try 100 USD to EUR or 0.1 BTC in USD…",
         };
@@ -639,6 +674,29 @@ impl Render for Palette {
         let selected = self.model.selected_entry().cloned();
         let selected_index = self.model.selected_index();
         let action_mode = self.model.mode() == PaletteMode::Actions;
+        if self.surface == PaletteSurface::Clipboard {
+            let actions = selected
+                .as_ref()
+                .map_or_else(Vec::new, |entry| entry.actions.clone());
+            let preview = selected.as_ref().and_then(|entry| {
+                self.clipboard
+                    .as_ref()
+                    .and_then(|history| history.preview(&entry.id))
+            });
+            return clipboard_view(
+                &matches,
+                selected_index,
+                action_mode,
+                &actions,
+                preview,
+                self.clipboard_filter,
+                self.notice.clone(),
+                self.search_input.clone(),
+                &self.results_scroll,
+                colors,
+                cx,
+            );
+        }
         let section_title = if action_mode {
             selected.as_ref().map_or_else(
                 || "Actions".into(),
@@ -647,7 +705,6 @@ impl Render for Palette {
         } else if self.surface != PaletteSurface::Launcher {
             match self.surface {
                 PaletteSurface::Clipboard => "Clipboard History",
-                PaletteSurface::Tools => "Mini Tools",
                 PaletteSurface::Emoji => "Emoji Picker",
                 PaletteSurface::Currency => "Currency & Crypto",
                 PaletteSurface::Launcher => unreachable!(),
@@ -680,7 +737,6 @@ impl Render for Palette {
             if self.surface != PaletteSurface::Launcher {
                 match self.surface {
                     PaletteSurface::Clipboard => format!("{} clipboard items", matches.len()),
-                    PaletteSurface::Tools => format!("{} tools", matches.len()),
                     PaletteSurface::Emoji => format!("{} emoji", matches.len()),
                     PaletteSurface::Currency => "Live rates · cached for offline use".into(),
                     PaletteSurface::Launcher => unreachable!(),
@@ -818,7 +874,356 @@ impl Render for Palette {
                         .top(px(4.0 * (1.0 - progress)))
                 },
             )
+            .into_any_element()
     }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the clipboard workspace is a single declarative composition"
+)]
+fn clipboard_view(
+    entries: &[PaletteEntry],
+    selected_index: usize,
+    action_mode: bool,
+    actions: &[ActionItem],
+    preview: Option<ClipboardPreview>,
+    filter: ClipboardFilter,
+    notice: Option<String>,
+    search_input: Entity<SearchInput>,
+    results_scroll: &ScrollHandle,
+    colors: theme::Theme,
+    cx: &mut Context<Palette>,
+) -> AnyElement {
+    let rows = if action_mode {
+        actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| action_row(index, action, index == selected_index, colors, cx))
+            .collect::<Vec<_>>()
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| clipboard_row(index, entry, index == selected_index, colors, cx))
+            .collect::<Vec<_>>()
+    };
+    let preview_panel = preview.map_or_else(
+        || {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(12.0))
+                .text_color(colors.muted)
+                .child("Select an item to preview")
+                .into_any_element()
+        },
+        |preview| clipboard_preview(preview, colors),
+    );
+    let footer_label = notice.unwrap_or_else(|| format!("{} items", entries.len()));
+
+    div()
+        .id("clipboard-workspace")
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(colors.background)
+        .text_color(colors.text)
+        .rounded(px(18.0))
+        .shadow(vec![BoxShadow {
+            color: colors.shadow,
+            offset: point(px(0.0), px(12.0)),
+            blur_radius: px(36.0),
+            spread_radius: px(-8.0),
+            inset: false,
+        }])
+        .overflow_hidden()
+        .child(
+            div()
+                .h(px(56.0))
+                .px(px(12.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .border_b_1()
+                .border_color(colors.divider)
+                .child(
+                    div()
+                        .id("clipboard-back")
+                        .size(px(30.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(7.0))
+                        .text_color(colors.text)
+                        .hover(move |button| button.bg(colors.hovered))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.enter_surface(PaletteSurface::Launcher, window, cx);
+                        }))
+                        .child(
+                            svg()
+                                .path("icons/back.svg")
+                                .size(px(18.0))
+                                .text_color(colors.text),
+                        ),
+                )
+                .child(div().h(px(38.0)).min_w_0().flex_1().child(search_input))
+                .child(
+                    div()
+                        .id("clipboard-filter")
+                        .h(px(34.0))
+                        .w(px(122.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .rounded(px(8.0))
+                        .bg(colors.surface)
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(move |button| button.bg(colors.hovered))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.clipboard_filter = this.clipboard_filter.next();
+                            this.refresh_results(cx);
+                            cx.notify();
+                        }))
+                        .child(filter.label())
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(colors.muted)
+                                .child("⌄"),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(
+                    div()
+                        .w(px(330.0))
+                        .min_h_0()
+                        .px(px(8.0))
+                        .pt(px(10.0))
+                        .border_r_1()
+                        .border_color(colors.divider)
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .h(px(24.0))
+                                .px(px(6.0))
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(colors.muted)
+                                .child(if action_mode { "Actions" } else { "Recent" }),
+                        )
+                        .child(
+                            div()
+                                .id("clipboard-results")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .track_scroll(results_scroll)
+                                .when(rows.is_empty(), |list| {
+                                    list.child(
+                                        div()
+                                            .size_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(12.0))
+                                            .text_color(colors.muted)
+                                            .child("Copy something to get started"),
+                                    )
+                                })
+                                .children(rows),
+                        ),
+                )
+                .child(div().flex_1().min_w_0().min_h_0().child(preview_panel)),
+        )
+        .child(
+            div()
+                .h(px(38.0))
+                .px(px(12.0))
+                .border_t_1()
+                .border_color(colors.divider)
+                .flex()
+                .items_center()
+                .justify_between()
+                .text_size(px(11.0))
+                .text_color(colors.muted)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.0))
+                        .child(line_icon("icons/clipboard.svg", colors, px(16.0)))
+                        .child("Clipboard History"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(footer_label)
+                        .child(if action_mode { "Run" } else { "Copy" })
+                        .child(keycap("↵", colors))
+                        .child("Actions")
+                        .child(keycap("⌘ K", colors)),
+                ),
+        )
+        .into_any_element()
+}
+
+fn clipboard_row(
+    index: usize,
+    entry: &PaletteEntry,
+    selected: bool,
+    colors: theme::Theme,
+    cx: &mut Context<Palette>,
+) -> AnyElement {
+    let entry = entry.clone();
+    div()
+        .id(("clipboard-row", index))
+        .h(px(44.0))
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(9.0))
+        .rounded(px(8.0))
+        .when(selected, |row| row.bg(colors.selected))
+        .hover(move |row| {
+            row.bg(if selected {
+                colors.selected
+            } else {
+                colors.hovered
+            })
+        })
+        .on_click(
+            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                if event.click_count() >= 2 {
+                    let palette_event = this.model.invoke(index);
+                    this.handle_event(palette_event, window, cx);
+                } else {
+                    this.model.select(index);
+                }
+                cx.notify();
+            }),
+        )
+        .child(entry_icon(&entry, colors))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .child(entry.title),
+        )
+        .when(entry.favorite, |row| {
+            row.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(colors.muted)
+                    .child("•"),
+            )
+        })
+        .into_any_element()
+}
+
+fn clipboard_preview(preview: ClipboardPreview, colors: theme::Theme) -> AnyElement {
+    let pinned = if preview.pinned {
+        "Pinned"
+    } else {
+        "Not pinned"
+    };
+    div()
+        .size_full()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .id("clipboard-preview-content")
+                .flex_1()
+                .min_h_0()
+                .p(px(18.0))
+                .overflow_y_scroll()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.muted)
+                        .mb(px(10.0))
+                        .child(preview.title),
+                )
+                .child(
+                    div()
+                        .whitespace_normal()
+                        .text_size(px(13.0))
+                        .line_height(px(20.0))
+                        .child(preview.body),
+                ),
+        )
+        .child(
+            div()
+                .px(px(18.0))
+                .py(px(10.0))
+                .bg(colors.surface)
+                .border_t_1()
+                .border_color(colors.divider)
+                .child(
+                    div()
+                        .h(px(24.0))
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors.muted)
+                        .child("Information"),
+                )
+                .child(info_row("Source", preview.source, colors))
+                .child(info_row("Content type", preview.content_type, colors))
+                .child(info_row(
+                    "Characters",
+                    preview.characters.to_string(),
+                    colors,
+                ))
+                .child(info_row("Words", preview.words.to_string(), colors))
+                .child(info_row("Copied", preview.age, colors))
+                .child(info_row("Pin", pinned, colors)),
+        )
+        .into_any_element()
+}
+
+fn info_row(label: &'static str, value: impl Into<String>, colors: theme::Theme) -> AnyElement {
+    div()
+        .h(px(25.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .border_t_1()
+        .border_color(colors.divider)
+        .text_size(px(11.0))
+        .child(div().text_color(colors.muted).child(label))
+        .child(
+            div()
+                .max_w(px(260.0))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_weight(FontWeight::MEDIUM)
+                .child(value.into()),
+        )
+        .into_any_element()
 }
 
 fn result_row(
@@ -1021,30 +1426,66 @@ fn action_row(
 }
 
 fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
-    let label = match entry.kind {
-        PaletteEntryKind::Application => entry
+    if let Some(path) = entry.icon.as_ref().filter(|path| is_renderable_image(path)) {
+        let fallback_label = entry
             .title
             .chars()
             .next()
             .unwrap_or('A')
             .to_uppercase()
-            .to_string(),
-        PaletteEntryKind::File => "F".into(),
-        PaletteEntryKind::Command => "›".into(),
-        PaletteEntryKind::Calculation => "=".into(),
-        PaletteEntryKind::Clipboard => "⎘".into(),
-        PaletteEntryKind::Tool => "◇".into(),
-        PaletteEntryKind::Emoji => entry.title.clone(),
-    };
-    if let Some(path) = entry.icon.as_ref().filter(|path| is_renderable_image(path)) {
-        let fallback_label = label.clone();
+            .to_string();
         return img(path.clone())
             .size(px(24.0))
             .rounded(px(5.0))
             .with_fallback(move || fallback_icon(fallback_label.clone(), colors))
             .into_any_element();
     }
-    fallback_icon(label, colors)
+    if entry.kind == PaletteEntryKind::Application {
+        return fallback_icon(
+            entry
+                .title
+                .chars()
+                .next()
+                .unwrap_or('A')
+                .to_uppercase()
+                .to_string(),
+            colors,
+        );
+    }
+    if entry.kind == PaletteEntryKind::Emoji {
+        return div()
+            .w(px(24.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(17.0))
+            .child(entry.title.clone())
+            .into_any_element();
+    }
+    let path = match entry.id.as_str() {
+        "builtin:clipboard" => "icons/clipboard.svg",
+        "tool:currency" => "icons/coins.svg",
+        "tool:emoji" => "icons/smile.svg",
+        "tool:uuid" => "icons/hash.svg",
+        "tool:timestamp" => "icons/clock.svg",
+        _ => match entry.kind {
+            PaletteEntryKind::File | PaletteEntryKind::Clipboard => "icons/file.svg",
+            PaletteEntryKind::Calculation => "icons/calculator.svg",
+            PaletteEntryKind::Command | PaletteEntryKind::Tool => "icons/command.svg",
+            PaletteEntryKind::Application | PaletteEntryKind::Emoji => unreachable!(),
+        },
+    };
+    line_icon(path, colors, px(18.0))
+}
+
+fn line_icon(path: &'static str, colors: theme::Theme, icon_size: gpui::Pixels) -> AnyElement {
+    div()
+        .w(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(svg().path(path).size(icon_size).text_color(colors.muted))
+        .into_any_element()
 }
 
 fn fallback_icon(label: String, colors: theme::Theme) -> AnyElement {
@@ -1139,7 +1580,6 @@ const fn empty_title(surface: PaletteSurface) -> &'static str {
     match surface {
         PaletteSurface::Currency => "Type a conversion",
         PaletteSurface::Emoji => "No emoji found",
-        PaletteSurface::Tools => "No tools found",
         PaletteSurface::Clipboard => "No clipboard items",
         PaletteSurface::Launcher => "No matches found",
     }
@@ -1149,7 +1589,6 @@ const fn empty_hint(surface: PaletteSurface) -> &'static str {
     match surface {
         PaletteSurface::Currency => "Example: 100 USD to EUR",
         PaletteSurface::Emoji => "Try a feeling, object, or symbol",
-        PaletteSurface::Tools => "Try currency, emoji, UUID, note, or command",
         PaletteSurface::Clipboard => "Copy something and it will appear here",
         PaletteSurface::Launcher => "Try an app name or a file keyword",
     }
