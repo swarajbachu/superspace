@@ -43,12 +43,23 @@ enum ClipboardFilter {
 }
 
 impl ClipboardFilter {
+    const ALL: [Self; 4] = [Self::All, Self::Text, Self::Images, Self::Files];
+
     const fn next(self) -> Self {
         match self {
             Self::All => Self::Text,
             Self::Text => Self::Images,
             Self::Images => Self::Files,
             Self::Files => Self::All,
+        }
+    }
+
+    const fn previous(self) -> Self {
+        match self {
+            Self::All => Self::Files,
+            Self::Text => Self::All,
+            Self::Images => Self::Text,
+            Self::Files => Self::Images,
         }
     }
 
@@ -87,6 +98,7 @@ pub struct Palette {
     calculations: HashMap<String, String>,
     clipboard: Option<ClipboardHistory>,
     clipboard_filter: ClipboardFilter,
+    clipboard_filter_open: bool,
     mini_tools: Option<MiniTools>,
     currency_query: Option<CurrencyQuery>,
     currency_input: Option<String>,
@@ -181,6 +193,7 @@ impl Palette {
             calculations: HashMap::new(),
             clipboard,
             clipboard_filter: ClipboardFilter::default(),
+            clipboard_filter_open: false,
             mini_tools,
             currency_query: None,
             currency_input: None,
@@ -214,6 +227,23 @@ impl Palette {
         {
             self.theme_kind = self.theme_kind.next();
             self.notice = Some(format!("{} appearance", self.theme_kind.name()));
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.surface == PaletteSurface::Clipboard && self.clipboard_filter_open {
+            match keystroke.key.as_str() {
+                "up" => self.clipboard_filter = self.clipboard_filter.previous(),
+                "down" => self.clipboard_filter = self.clipboard_filter.next(),
+                "enter" | "escape" => {
+                    self.clipboard_filter_open = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                _ => return,
+            }
+            self.refresh_results(cx);
             cx.stop_propagation();
             cx.notify();
             return;
@@ -575,6 +605,7 @@ impl Palette {
         cx: &mut Context<Self>,
     ) {
         self.surface = surface;
+        self.clipboard_filter_open = false;
         self.notice = None;
         let placeholder = match surface {
             PaletteSurface::Launcher => "Search apps, files, and tools…",
@@ -685,9 +716,11 @@ impl Render for Palette {
                 &actions,
                 preview,
                 self.clipboard_filter,
+                self.clipboard_filter_open,
                 self.notice.clone(),
                 self.search_input.clone(),
                 &self.results_scroll,
+                &self.focus,
                 colors,
                 cx,
             );
@@ -885,9 +918,11 @@ fn clipboard_view(
     actions: &[ActionItem],
     preview: Option<ClipboardPreview>,
     filter: ClipboardFilter,
+    filter_open: bool,
     notice: Option<String>,
     search_input: Entity<SearchInput>,
     results_scroll: &ScrollHandle,
+    focus: &FocusHandle,
     colors: theme::Theme,
     cx: &mut Context<Palette>,
 ) -> AnyElement {
@@ -923,6 +958,7 @@ fn clipboard_view(
     div()
         .id("clipboard-workspace")
         .size_full()
+        .relative()
         .flex()
         .flex_col()
         .bg(colors.background)
@@ -936,6 +972,8 @@ fn clipboard_view(
             inset: false,
         }])
         .overflow_hidden()
+        .track_focus(focus)
+        .on_key_down(cx.listener(Palette::key_down))
         .child(
             div()
                 .h(px(56.0))
@@ -981,8 +1019,7 @@ fn clipboard_view(
                         .font_weight(FontWeight::MEDIUM)
                         .hover(move |button| button.bg(colors.hovered))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.clipboard_filter = this.clipboard_filter.next();
-                            this.refresh_results(cx);
+                            this.clipboard_filter_open = !this.clipboard_filter_open;
                             cx.notify();
                         }))
                         .child(filter.label())
@@ -1073,6 +1110,51 @@ fn clipboard_view(
                         .child(keycap("⌘ K", colors)),
                 ),
         )
+        .when(filter_open, |workspace| {
+            workspace.child(
+                div()
+                    .id("clipboard-filter-menu")
+                    .absolute()
+                    .top(px(50.0))
+                    .right(px(12.0))
+                    .w(px(122.0))
+                    .p(px(4.0))
+                    .rounded(px(9.0))
+                    .bg(colors.background)
+                    .border_1()
+                    .border_color(colors.divider)
+                    .shadow(vec![BoxShadow {
+                        color: colors.shadow,
+                        offset: point(px(0.0), px(8.0)),
+                        blur_radius: px(20.0),
+                        spread_radius: px(-4.0),
+                        inset: false,
+                    }])
+                    .children(ClipboardFilter::ALL.into_iter().enumerate().map(
+                        |(index, option)| {
+                            div()
+                                .id(("clipboard-filter-option", index))
+                                .h(px(30.0))
+                                .px(px(8.0))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .rounded(px(6.0))
+                                .text_size(px(12.0))
+                                .when(option == filter, |row| row.bg(colors.selected))
+                                .hover(move |row| row.bg(colors.hovered))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.clipboard_filter = option;
+                                    this.clipboard_filter_open = false;
+                                    this.refresh_results(cx);
+                                    cx.notify();
+                                }))
+                                .child(option.label())
+                                .child(if option == filter { "✓" } else { "" })
+                        },
+                    )),
+            )
+        })
         .into_any_element()
 }
 
@@ -1722,7 +1804,7 @@ fn default_data_root() -> PathBuf {
 mod tests {
     use rust_decimal::Decimal;
 
-    use super::{currency_loading_entry, currency_result_entry};
+    use super::{ClipboardFilter, currency_loading_entry, currency_result_entry};
     use crate::{PaletteModel, currency::Conversion};
     use superspace_calculator::CurrencyQuery;
 
@@ -1743,5 +1825,12 @@ mod tests {
         let mut result = PaletteModel::new(vec![currency_result_entry(&conversion, input)]);
         result.set_query(input);
         assert!(result.results().next().is_some());
+    }
+
+    #[test]
+    fn clipboard_filter_keyboard_order_wraps_in_both_directions() {
+        assert_eq!(ClipboardFilter::All.next(), ClipboardFilter::Text);
+        assert_eq!(ClipboardFilter::All.previous(), ClipboardFilter::Files);
+        assert_eq!(ClipboardFilter::Files.next(), ClipboardFilter::All);
     }
 }
