@@ -209,6 +209,14 @@ impl PaletteModel {
         true
     }
 
+    /// Move the active selection by an arbitrary signed offset, wrapping at the edges.
+    ///
+    /// Grid surfaces use this to move by one visual row while list surfaces continue
+    /// to use the normalized Up and Down keys.
+    pub fn move_selection_by(&mut self, delta: isize) {
+        self.move_selection(delta);
+    }
+
     /// Select and invoke a visible row, as used by pointer input.
     pub fn invoke(&mut self, index: usize) -> PaletteEvent {
         if !self.select(index) {
@@ -410,6 +418,10 @@ mod tests {
         model.key(PaletteKey::Up);
         assert_eq!(model.selected_index(), 2);
         model.key(PaletteKey::Down);
+        assert_eq!(model.selected_index(), 0);
+        model.move_selection_by(2);
+        assert_eq!(model.selected_index(), 2);
+        model.move_selection_by(1);
         assert_eq!(model.selected_index(), 0);
         model.key(PaletteKey::OpenActions);
         assert_eq!(model.mode(), PaletteMode::Actions);
