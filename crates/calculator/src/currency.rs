@@ -44,17 +44,27 @@ pub struct CurrencyQuery {
 }
 
 impl CurrencyQuery {
-    /// Parse `<amount> <asset> to|in <asset>` without guessing bare arithmetic.
+    /// Parse common conversion phrasing without guessing bare arithmetic.
+    ///
+    /// Accepts both `10 USD in INR` and `USD 10 in INR`, matching the two
+    /// word orders people naturally use in launchers.
     #[must_use]
     pub fn parse(input: &str) -> Option<Self> {
         let fields = input.split_whitespace().collect::<Vec<_>>();
         if fields.len() != 4 || !matches!(fields[2].to_ascii_lowercase().as_str(), "to" | "in") {
             return None;
         }
-        let amount = Decimal::from_str(&fields[0].replace(',', "")).ok()?;
+        let amount_first = Decimal::from_str(&fields[0].replace(',', ""));
+        let (amount, from) = match amount_first {
+            Ok(amount) => (amount, fields[1]),
+            Err(_) => (
+                Decimal::from_str(&fields[1].replace(',', "")).ok()?,
+                fields[0],
+            ),
+        };
         Some(Self {
             amount,
-            from: AssetCode::parse(fields[1]).ok()?,
+            from: AssetCode::parse(from).ok()?,
             to: AssetCode::parse(fields[3]).ok()?,
         })
     }
@@ -211,7 +221,14 @@ mod tests {
         assert_eq!(query.amount, Decimal::new(125_050, 2));
         assert_eq!(query.from.as_str(), "USD");
         assert_eq!(query.to.as_str(), "EUR");
+
+        let natural_order = CurrencyQuery::parse("usd 10 in inr").expect("currency query");
+        assert_eq!(natural_order.amount, Decimal::TEN);
+        assert_eq!(natural_order.from.as_str(), "USD");
+        assert_eq!(natural_order.to.as_str(), "INR");
+
         assert_eq!(CurrencyQuery::parse("2 + 2"), None);
         assert_eq!(CurrencyQuery::parse("USD to EUR"), None);
+        assert_eq!(CurrencyQuery::parse("USD ten in INR"), None);
     }
 }
