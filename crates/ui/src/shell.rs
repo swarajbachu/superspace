@@ -935,6 +935,7 @@ impl Render for Palette {
 
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "emoji picker is a focused surface with explicit dependencies"
 )]
 fn emoji_view(
