@@ -6,6 +6,7 @@ members = [
     "crates/ai",
     "crates/calculator",
     "crates/core",
+    "crates/emoji",
     "crates/extensions",
     "crates/files",
     "crates/network",

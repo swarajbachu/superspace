@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use superspace_emoji::search as search_emoji;
 use superspace_productivity::{
-    Item, ItemContent, ProductivityStore, resolve_command, resolve_quicklink, search_emoji,
-    search_symbols,
+    Item, ItemContent, ProductivityStore, resolve_command, resolve_quicklink, search_symbols,
 };
 
 use crate::{ActionItem, PaletteEntry, PaletteEntryKind};
@@ -66,7 +66,7 @@ impl MiniTools {
     }
 
     pub(crate) fn emoji_entries(query: &str) -> Vec<PaletteEntry> {
-        let mut entries = search_emoji(query, 150)
+        let mut entries = search_emoji(query)
             .into_iter()
             .map(|emoji| PaletteEntry {
                 id: format!("emoji:{}", emoji.value),
@@ -259,6 +259,16 @@ mod tests {
             symbols
                 .iter()
                 .any(|entry| entry.actions[0].id == "copy-symbol")
+        );
+
+        let complete_catalog = MiniTools::emoji_entries("");
+        assert!(
+            complete_catalog
+                .iter()
+                .filter(|entry| entry.actions[0].id == "copy-emoji")
+                .count()
+                > 150,
+            "the picker must expose the complete emoji catalog"
         );
     }
 }

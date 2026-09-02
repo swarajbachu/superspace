@@ -6472,6 +6472,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "superspace-emoji"
+version = "0.1.0"
+dependencies = [
+ "emojis",
+]
+
+[[package]]
 name = "superspace-extension"
 version = "0.1.0"
 dependencies = [
@@ -6543,7 +6550,6 @@ dependencies = [
 name = "superspace-productivity"
 version = "0.1.0"
 dependencies = [
- "emojis",
  "rusqlite",
  "serde",
  "tempfile",
@@ -6603,6 +6609,7 @@ dependencies = [
  "serde_json",
  "superspace-calculator",
  "superspace-core",
+ "superspace-emoji",
  "superspace-files",
  "superspace-platform",
  "superspace-productivity",

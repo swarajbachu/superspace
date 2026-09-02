@@ -252,17 +252,6 @@ pub fn resolve_command(item: &Item, query: &str) -> Result<CommandInvocation, Pr
     })
 }
 
-/// A built-in emoji search result.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Emoji {
-    /// Unicode grapheme.
-    pub value: &'static str,
-    /// Human-readable name.
-    pub name: &'static str,
-    /// Search aliases.
-    pub keywords: Vec<&'static str>,
-}
-
 /// A searchable typographic, mathematical, currency, or keyboard symbol.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Symbol {
@@ -272,29 +261,6 @@ pub struct Symbol {
     pub name: &'static str,
     /// Search aliases.
     pub keywords: &'static [&'static str],
-}
-
-/// Search the built-in emoji catalog.
-#[must_use]
-pub fn search_emoji(query: &str, limit: usize) -> Vec<Emoji> {
-    let query = query.trim().to_ascii_lowercase();
-    let mut matches = emojis::iter()
-        .filter_map(|emoji| emoji_match_score(emoji, &query).map(|score| (score, emoji)))
-        .collect::<Vec<_>>();
-    matches.sort_by_key(|(score, _)| *score);
-    matches
-        .into_iter()
-        .take(limit)
-        .map(|(_, emoji)| emoji)
-        .map(|emoji| Emoji {
-            value: emoji.as_str(),
-            name: emoji.name(),
-            keywords: emoji
-                .shortcodes()
-                .chain(extra_emoji_keywords(emoji.as_str()).iter().copied())
-                .collect(),
-        })
-        .collect()
 }
 
 /// Search the built-in symbol catalog by name or common alias.
@@ -315,47 +281,6 @@ pub fn search_symbols(query: &str, limit: usize) -> Vec<Symbol> {
         })
         .take(limit)
         .collect()
-}
-
-fn emoji_match_score(emoji: &emojis::Emoji, query: &str) -> Option<u8> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let aliases = extra_emoji_keywords(emoji.as_str());
-    if aliases.contains(&query) {
-        Some(0)
-    } else if emoji.shortcodes().any(|shortcode| shortcode == query) {
-        Some(1)
-    } else if emoji.name() == query {
-        Some(2)
-    } else if aliases.iter().any(|keyword| keyword.contains(query)) {
-        Some(3)
-    } else if emoji
-        .shortcodes()
-        .any(|shortcode| shortcode.contains(query))
-    {
-        Some(4)
-    } else if emoji.name().contains(query) {
-        Some(5)
-    } else {
-        None
-    }
-}
-
-fn extra_emoji_keywords(value: &str) -> &'static [&'static str] {
-    match value {
-        "😀" => &["smile", "happy"],
-        "😂" => &["laugh", "lol"],
-        "❤️" => &["love", "like"],
-        "👍" => &["yes", "approve", "like"],
-        "🎉" => &["celebrate", "tada"],
-        "🚀" => &["launch", "ship"],
-        "✅" => &["done", "success"],
-        "🔥" => &["hot", "lit"],
-        "👀" => &["look", "watch"],
-        "🙏" => &["thanks", "please"],
-        _ => &[],
-    }
 }
 
 /// Productivity persistence and validation failures.
@@ -632,10 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn emoji_search_uses_names_and_aliases() {
-        assert_eq!(search_emoji("", 256).len(), 256);
-        assert_eq!(search_emoji("ship", 5)[0].value, "🚀");
-        assert_eq!(search_emoji("like", 1)[0].value, "❤️");
+    fn symbol_search_uses_names_and_aliases() {
         assert_eq!(search_symbols("command", 1)[0].value, "⌘");
         assert!(search_symbols("math", 50).len() > 10);
     }
