@@ -6,8 +6,8 @@ use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ListAlignment, ListState, ParentElement as _, Render, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, hsla, img, list,
-    point, px, size, svg,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, hsla, img,
+    linear_color_stop, linear_gradient, list, point, px, size, svg,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue, TimeQuery};
 use superspace_core::LauncherPreferences;
@@ -748,6 +748,19 @@ impl Palette {
         } else if let Some(intent) = tool_intent(&query) {
             entries.push(intent_entry(intent, &query));
         }
+        let completed_tools = entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == PaletteEntryKind::Calculation && !entry.actions.is_empty()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !completed_tools.is_empty() {
+            let mut focused_entries = completed_tools;
+            focused_entries.extend(fallback_entries(&query));
+            self.model.replace_entries_ordered(focused_entries);
+            return;
+        }
         entries.extend(matches.into_iter().map(|matched| {
             let id = format!("file:{}", matched.path.display());
             self.files.insert(id.clone(), matched.path.clone());
@@ -838,10 +851,7 @@ impl Palette {
 
         self.currency_query = Some(query.clone());
         self.currency_result = None;
-        self.model.replace_entries(vec![currency_loading_entry(
-            &query,
-            self.currency_input.as_deref().unwrap_or_default(),
-        )]);
+        self.show_currency_result();
         let root = data_root();
         let requested_query = query.clone();
         cx.spawn(async move |this, cx| {
@@ -861,7 +871,7 @@ impl Palette {
     }
 
     fn show_currency_result(&mut self) {
-        let entries = match &self.currency_result {
+        let mut entries = match &self.currency_result {
             None => self
                 .currency_query
                 .as_ref()
@@ -882,7 +892,12 @@ impl Palette {
                 Vec::new()
             }
         };
-        self.model.replace_entries(entries);
+        if let Some(input) = self.currency_input.as_deref()
+            && !input.trim().is_empty()
+        {
+            entries.extend(fallback_entries(input));
+        }
+        self.model.replace_entries_ordered(entries);
     }
 }
 
@@ -945,6 +960,13 @@ impl Render for Palette {
             && matches
                 .iter()
                 .all(|entry| entry.id.starts_with("fallback:"));
+        let calculation_with_fallbacks = !action_mode
+            && matches
+                .first()
+                .is_some_and(|entry| entry.kind == PaletteEntryKind::Calculation)
+            && matches
+                .iter()
+                .any(|entry| entry.id.starts_with("fallback:"));
         let section_title = if action_mode {
             selected.as_ref().map_or_else(
                 || "Actions".into(),
@@ -958,6 +980,19 @@ impl Render for Palette {
                 PaletteSurface::Launcher => unreachable!(),
             }
             .into()
+        } else if calculation_with_fallbacks {
+            matches.first().map_or_else(
+                || "Calculator".into(),
+                |entry| {
+                    if entry.id.starts_with("currency:") {
+                        "Currency Conversion".into()
+                    } else if entry.id.starts_with("time:") {
+                        "Time Conversion".into()
+                    } else {
+                        "Calculator".into()
+                    }
+                },
+            )
         } else if fallback_results {
             format!("Use “{}” with…", self.model.query())
         } else if self.model.query().is_empty() {
@@ -976,11 +1011,37 @@ impl Render for Palette {
                 })
                 .collect::<Vec<_>>()
         } else {
-            matches
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| result_row(index, entry, index == selected_index, colors, cx))
-                .collect::<Vec<_>>()
+            let mut rows = Vec::new();
+            let mut fallback_heading_added = false;
+            for (index, entry) in matches.iter().enumerate() {
+                if calculation_with_fallbacks
+                    && entry.id.starts_with("fallback:")
+                    && !fallback_heading_added
+                {
+                    rows.push(
+                        div()
+                            .h(px(34.0))
+                            .px(px(6.0))
+                            .pt(px(10.0))
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors.muted)
+                            .child(format!("Use “{}” with…", self.model.query()))
+                            .into_any_element(),
+                    );
+                    fallback_heading_added = true;
+                }
+                rows.push(result_row(
+                    index,
+                    entry,
+                    index == selected_index,
+                    colors,
+                    cx,
+                ));
+            }
+            rows
         };
 
         let footer_label = self.notice.clone().unwrap_or_else(|| {
@@ -1982,12 +2043,120 @@ fn calculation_row(
     colors: theme::Theme,
     cx: &mut Context<Palette>,
 ) -> AnyElement {
-    let icon = entry_icon(&entry, colors);
-    let action_label = if entry.actions.is_empty() {
-        "Keep typing"
-    } else {
-        "Copy"
-    };
+    if !entry.actions.is_empty() {
+        let white = hsla(0.0, 0.0, 1.0, 1.0);
+        let white_muted = hsla(0.0, 0.0, 1.0, 0.64);
+        let white_divider = hsla(0.0, 0.0, 1.0, 0.18);
+        return div()
+            .id(("calculation-row", index))
+            .h(px(126.0))
+            .mx(px(2.0))
+            .mb(px(4.0))
+            .flex()
+            .items_stretch()
+            .overflow_hidden()
+            .rounded(px(13.0))
+            .bg(linear_gradient(
+                112.0,
+                linear_color_stop(hsla(0.76, 0.82, 0.29, 1.0), 0.0),
+                linear_color_stop(hsla(0.86, 0.78, 0.43, 1.0), 1.0),
+            ))
+            .when(selected, |card| {
+                card.border_1().border_color(hsla(0.0, 0.0, 1.0, 0.34))
+            })
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    if event.click_count() >= 2 {
+                        let palette_event = this.model.invoke(index);
+                        this.handle_event(palette_event, window, cx);
+                    } else {
+                        this.model.select(index);
+                    }
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px(px(22.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(7.0))
+                    .child(
+                        div()
+                            .w_full()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_center()
+                            .text_size(px(21.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(white)
+                            .child(entry.subtitle),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(white_muted)
+                            .child("INPUT"),
+                    ),
+            )
+            .child(
+                div()
+                    .w(px(56.0))
+                    .h_full()
+                    .flex_shrink_0()
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(white_divider)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(21.0))
+                    .text_color(white_muted)
+                    .child("→"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px(px(22.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(7.0))
+                    .child(
+                        div()
+                            .w_full()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_center()
+                            .text_size(px(23.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(white)
+                            .child(entry.title),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_center()
+                            .text_size(px(10.0))
+                            .text_color(white_muted)
+                            .child(entry.preview),
+                    ),
+            )
+            .into_any_element();
+    }
+
     div()
         .id(("calculation-row", index))
         .h(px(72.0))
@@ -2019,7 +2188,6 @@ fn calculation_row(
                 cx.notify();
             }),
         )
-        .child(icon)
         .child(
             div()
                 .flex_1()
@@ -2088,7 +2256,7 @@ fn calculation_row(
                 .flex_shrink_0()
                 .text_size(px(11.0))
                 .text_color(colors.muted)
-                .child(action_label),
+                .child("Keep typing"),
         )
         .into_any_element()
 }
@@ -2507,10 +2675,10 @@ fn fallback_entries(query: &str) -> Vec<PaletteEntry> {
     [
         (
             "fallback:web",
-            format!("Search the web for “{query}”"),
+            format!("Search Google for “{query}”"),
             "Open in your default browser",
             "search-web",
-            "Web Search",
+            "Google Search",
         ),
         (
             "fallback:files",
