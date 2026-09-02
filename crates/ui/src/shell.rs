@@ -110,10 +110,15 @@ pub struct Palette {
     theme_kind: theme::ThemeKind,
     preferences: LauncherPreferences,
     preferences_path: PathBuf,
+    focused_text_target: bool,
 }
 
 impl Palette {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        focused_text_target: bool,
+    ) -> Self {
         let search_input = cx.new(SearchInput::new);
         let results_scroll = ScrollHandle::new();
         let emoji_scroll = UniformListScrollHandle::new();
@@ -208,6 +213,7 @@ impl Palette {
             theme_kind: theme::ThemeKind::default(),
             preferences,
             preferences_path,
+            focused_text_target,
         }
     }
 
@@ -441,7 +447,11 @@ impl Palette {
                 cx.write_to_clipboard(ClipboardItem::new_string(value.to_owned()));
                 self.notice = Some(format!("Copied {value}"));
             }
-            false
+            if self.focused_text_target {
+                cx.hide();
+                let _ = superspace_platform::paste_from_clipboard();
+            }
+            true
         } else if action_id == "copy-uuid" {
             let value = uuid::Uuid::new_v4().to_string();
             cx.write_to_clipboard(ClipboardItem::new_string(value));
@@ -783,6 +793,7 @@ impl Render for Palette {
                 self.search_input.clone(),
                 &self.emoji_scroll,
                 &self.focus,
+                self.focused_text_target,
                 colors,
                 cx,
             );
@@ -1005,11 +1016,12 @@ fn emoji_view(
     search_input: Entity<SearchInput>,
     results_scroll: &UniformListScrollHandle,
     focus: &FocusHandle,
+    focused_text_target: bool,
     colors: theme::Theme,
     cx: &mut Context<Palette>,
 ) -> AnyElement {
     let section_title = if search_input.read(cx).text().trim().is_empty() {
-        "Popular"
+        "All Emoji & Symbols"
     } else {
         "Search Results"
     };
@@ -1173,7 +1185,11 @@ fn emoji_view(
                         .flex()
                         .items_center()
                         .gap(px(7.0))
-                        .child("Copy")
+                        .child(if focused_text_target {
+                            "Insert"
+                        } else {
+                            "Copy"
+                        })
                         .child(keycap("↵", colors)),
                 ),
         )

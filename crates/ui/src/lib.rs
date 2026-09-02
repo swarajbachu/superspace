@@ -39,6 +39,7 @@ pub fn run() {
         .run(|cx: &mut App| {
             theme::install(cx);
             search_input::init(cx);
+            let focused_text_target = superspace_platform::focused_text_target();
             let bounds = Bounds::centered(None, size(px(800.0), px(500.0)), cx);
             cx.open_window(
                 WindowOptions {
@@ -51,7 +52,7 @@ pub fn run() {
                     is_minimizable: false,
                     ..WindowOptions::default()
                 },
-                |window, cx| cx.new(|cx| shell::Palette::new(window, cx)),
+                |window, cx| cx.new(|cx| shell::Palette::new(window, cx, focused_text_target)),
             )
             .expect("open Superspace palette");
             cx.activate(true);
