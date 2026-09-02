@@ -15,9 +15,9 @@ use std::{future::Future, net::IpAddr};
 use anyhow::{Context as _, Result, bail};
 use fs2::FileExt as _;
 use superspace_core::{LauncherPreferences, builtin_features};
+use superspace_emoji::search as search_emoji;
 use superspace_productivity::{
     Item, ItemContent, ProductivityStore, expand_snippet, resolve_command, resolve_quicklink,
-    search_emoji,
 };
 use superspace_storage::{
     BlobStore, ClipboardQuery, ClipboardStore, Retention, TrustedDevice, TrustedDeviceStore,
@@ -769,7 +769,7 @@ fn productivity(mut arguments: impl Iterator<Item = String>) -> Result<()> {
         }
         "emoji" => {
             let query = arguments.collect::<Vec<_>>().join(" ");
-            for emoji in search_emoji(&query, 100) {
+            for emoji in search_emoji(&query) {
                 println!("{}\t{}", emoji.value, emoji.name);
             }
         }

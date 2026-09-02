@@ -6427,6 +6427,7 @@ dependencies = [
  "quinn",
  "serde_json",
  "superspace-core",
+ "superspace-emoji",
  "superspace-files",
  "superspace-network",
  "superspace-platform",

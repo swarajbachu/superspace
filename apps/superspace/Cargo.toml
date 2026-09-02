@@ -16,6 +16,7 @@ fs2.workspace = true
 quinn.workspace = true
 serde_json.workspace = true
 superspace-core = { path = "../../crates/core" }
+superspace-emoji = { path = "../../crates/emoji" }
 superspace-files = { path = "../../crates/files" }
 superspace-network = { path = "../../crates/network" }
 superspace-platform = { path = "../../crates/platform" }
