@@ -11,6 +11,7 @@ use gpui::{
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue};
 use superspace_core::LauncherPreferences;
 use superspace_platform::AppDescriptor;
+use superspace_productivity::resolve_quicklink;
 use superspace_storage::ClipboardKind;
 
 use crate::{
@@ -392,6 +393,27 @@ impl Palette {
                     }
                 }
             })
+        } else if action_id == "search-web" {
+            let url = resolve_quicklink(
+                "https://www.google.com/search?q={query}",
+                self.model.query(),
+            );
+            match superspace_platform::open_path(url) {
+                Ok(_) => true,
+                Err(error) => {
+                    self.notice = Some(format!("Could not open web search: {error}"));
+                    false
+                }
+            }
+        } else if action_id == "search-files" {
+            let folder = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+            match superspace_platform::open_path(folder) {
+                Ok(_) => true,
+                Err(error) => {
+                    self.notice = Some(format!("Could not open file browser: {error}"));
+                    false
+                }
+            }
         } else if action_id == "copy-result" {
             if let Some(result) = self.calculations.get(entry_id) {
                 cx.write_to_clipboard(ClipboardItem::new_string(result.clone()));
@@ -556,7 +578,7 @@ impl Palette {
             .mini_tools
             .as_mut()
             .and_then(|tools| tools.keyword_entry(&query).ok().flatten());
-        let matches = if query.chars().count() >= 2 {
+        let matches = if query.chars().count() >= 1 {
             self.file_index
                 .as_ref()
                 .and_then(|index| index.search(&query, None, 30).ok())
@@ -611,6 +633,9 @@ impl Palette {
             }
         }));
         self.model.replace_entries(entries);
+        if !query.is_empty() && self.model.results().next().is_none() {
+            self.model.replace_entries(fallback_entries(&query));
+        }
     }
 
     fn enter_surface(
@@ -1983,6 +2008,43 @@ fn builtin_entry(id: &str, title: &str, preview: &str, action_id: &str) -> Palet
     }
 }
 
+fn fallback_entries(query: &str) -> Vec<PaletteEntry> {
+    [
+        (
+            "fallback:web",
+            format!("Search the web for “{query}”"),
+            "Open in your default browser",
+            "search-web",
+            "Web Search",
+        ),
+        (
+            "fallback:files",
+            format!("Search files for “{query}”"),
+            "Continue in your file browser",
+            "search-files",
+            "File Search",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, title, subtitle, action, preview)| PaletteEntry {
+        id: id.into(),
+        title,
+        subtitle: subtitle.into(),
+        kind: PaletteEntryKind::Command,
+        icon: None,
+        keywords: vec![query.into(), preview.into()],
+        preview: preview.into(),
+        frequency: 0,
+        favorite: false,
+        actions: vec![ActionItem {
+            id: action.into(),
+            title: preview.into(),
+            shortcut: Some("↵".into()),
+        }],
+    })
+    .collect()
+}
+
 fn apply_preference(entry: &mut PaletteEntry, preferences: &LauncherPreferences) {
     if let Some(preference) = preferences.get(&entry.id) {
         if let Some(alias) = &preference.alias {
@@ -2021,7 +2083,7 @@ fn default_data_root() -> PathBuf {
 mod tests {
     use rust_decimal::Decimal;
 
-    use super::{ClipboardFilter, currency_loading_entry, currency_result_entry};
+    use super::{ClipboardFilter, currency_loading_entry, currency_result_entry, fallback_entries};
     use crate::{PaletteModel, currency::Conversion};
     use superspace_calculator::CurrencyQuery;
 
@@ -2049,5 +2111,19 @@ mod tests {
         assert_eq!(ClipboardFilter::All.next(), ClipboardFilter::Text);
         assert_eq!(ClipboardFilter::All.previous(), ClipboardFilter::Files);
         assert_eq!(ClipboardFilter::Files.next(), ClipboardFilter::All);
+    }
+
+    #[test]
+    fn unmatched_queries_offer_real_web_and_file_actions() {
+        let entries = fallback_entries("one character");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].actions[0].id, "search-web");
+        assert_eq!(entries[1].actions[0].id, "search-files");
+        assert!(entries.iter().all(|entry| {
+            entry
+                .keywords
+                .iter()
+                .any(|keyword| keyword == "one character")
+        }));
     }
 }
