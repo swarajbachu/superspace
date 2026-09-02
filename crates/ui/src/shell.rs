@@ -35,6 +35,8 @@ enum PaletteSurface {
     Currency,
 }
 
+const EMOJI_COLUMNS: usize = 12;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ClipboardFilter {
     #[default]
@@ -294,14 +296,16 @@ impl Palette {
         }
         if self.surface == PaletteSurface::Emoji && self.model.mode() == PaletteMode::Results {
             let offset = match key {
-                PaletteKey::Up => Some(-8),
-                PaletteKey::Down => Some(8),
+                PaletteKey::Up => Some(-(EMOJI_COLUMNS as isize)),
+                PaletteKey::Down => Some(EMOJI_COLUMNS as isize),
                 _ => None,
             };
             if let Some(offset) = offset {
                 self.model.move_selection_by(offset);
-                self.emoji_scroll
-                    .scroll_to_item(self.model.selected_index() / 8, ScrollStrategy::Nearest);
+                self.emoji_scroll.scroll_to_item(
+                    self.model.selected_index() / EMOJI_COLUMNS,
+                    ScrollStrategy::Nearest,
+                );
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -1059,7 +1063,7 @@ fn emoji_view(
     };
     let selected_name =
         selected.map_or("Choose an emoji or symbol", |entry| entry.subtitle.as_str());
-    let row_count = entry_count.div_ceil(8);
+    let row_count = entry_count.div_ceil(EMOJI_COLUMNS);
 
     div()
         .id("emoji-picker")
@@ -1081,7 +1085,7 @@ fn emoji_view(
         .on_key_down(cx.listener(Palette::key_down))
         .child(
             div()
-                .h(px(54.0))
+                .h(px(50.0))
                 .px(px(12.0))
                 .flex()
                 .items_center()
@@ -1091,7 +1095,7 @@ fn emoji_view(
                 .child(
                     div()
                         .id("emoji-back")
-                        .size(px(30.0))
+                        .size(px(28.0))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -1110,13 +1114,9 @@ fn emoji_view(
                 .child(div().h(px(36.0)).min_w_0().flex_1().child(search_input))
                 .child(
                     div()
-                        .h(px(28.0))
-                        .px(px(9.0))
                         .flex()
                         .items_center()
-                        .rounded(px(7.0))
-                        .bg(colors.surface)
-                        .text_size(px(11.0))
+                        .text_size(px(10.0))
                         .text_color(colors.muted)
                         .child(format!("{entry_count} items")),
                 ),
@@ -1126,22 +1126,20 @@ fn emoji_view(
                 .flex_1()
                 .min_h_0()
                 .px(px(12.0))
-                .pt(px(10.0))
-                .pb(px(8.0))
+                .pt(px(7.0))
+                .pb(px(6.0))
                 .flex()
                 .flex_col()
                 .child(
                     div()
-                        .h(px(24.0))
+                        .h(px(22.0))
                         .px(px(2.0))
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .text_size(px(11.0))
+                        .text_size(px(10.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.muted)
-                        .child(section_title)
-                        .child(entry_count.to_string()),
+                        .child(section_title),
                 )
                 .child(
                     div()
@@ -1163,26 +1161,26 @@ fn emoji_view(
                                     row_count,
                                     cx.processor(
                                         move |this, rows: std::ops::Range<usize>, _, cx| {
-                                            let first_entry = rows.start * 8;
+                                            let first_entry = rows.start * EMOJI_COLUMNS;
                                             let visible_entries = this
                                                 .model
                                                 .results()
                                                 .skip(first_entry)
-                                                .take((rows.end - rows.start) * 8)
+                                                .take((rows.end - rows.start) * EMOJI_COLUMNS)
                                                 .cloned()
                                                 .collect::<Vec<_>>();
                                             let selected_index = this.model.selected_index();
                                             rows.enumerate()
                                                 .map(|(row_offset, _row)| {
-                                                    let start = row_offset * 8;
-                                                    let end =
-                                                        (start + 8).min(visible_entries.len());
+                                                    let start = row_offset * EMOJI_COLUMNS;
+                                                    let end = (start + EMOJI_COLUMNS)
+                                                        .min(visible_entries.len());
                                                     div()
-                                                        .h(px(64.0))
-                                                        .pb(px(6.0))
+                                                        .h(px(44.0))
+                                                        .pb(px(4.0))
                                                         .grid()
-                                                        .grid_cols(8)
-                                                        .gap(px(6.0))
+                                                        .grid_cols(12)
+                                                        .gap(px(4.0))
                                                         .children((start..end).map(|offset| {
                                                             let index = first_entry + offset;
                                                             emoji_tile(
@@ -1206,7 +1204,7 @@ fn emoji_view(
         )
         .child(
             div()
-                .h(px(38.0))
+                .h(px(36.0))
                 .px(px(12.0))
                 .border_t_1()
                 .border_color(colors.divider)
@@ -1248,17 +1246,16 @@ fn emoji_tile(
 ) -> AnyElement {
     div()
         .id(("emoji-tile", index))
-        .h(px(58.0))
+        .h(px(40.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.0))
-        .bg(colors.tile)
-        .text_size(px(28.0))
+        .rounded(px(7.0))
+        .text_size(px(23.0))
         .when(selected, |tile| {
             tile.bg(colors.selected)
                 .border_1()
-                .border_color(colors.accent.opacity(0.72))
+                .border_color(colors.accent.opacity(0.60))
         })
         .hover(move |tile| tile.bg(colors.hovered))
         .on_click(
