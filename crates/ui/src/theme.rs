@@ -51,6 +51,8 @@ pub struct Theme {
     pub muted: Hsla,
     /// Interactive accent.
     pub accent: Hsla,
+    /// Branded background for Superspace-owned tool icons.
+    pub tool_icon: Hsla,
     /// Low-emphasis icon tile.
     pub tile: Hsla,
     /// Ambient window shadow.
@@ -77,7 +79,8 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             hovered: hsla(0.0, 0.0, 1.0, 0.085),
             text: hsla(0.0, 0.0, 0.95, 1.0),
             muted: hsla(0.64, 0.02, 0.70, 1.0),
-            accent: hsla(0.59, 0.76, 0.67, 1.0),
+            accent: hsla(0.75, 0.62, 0.66, 1.0),
+            tool_icon: hsla(0.75, 0.68, 0.43, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.085),
             shadow: hsla(0.0, 0.0, 0.0, 0.42),
             divider: hsla(0.0, 0.0, 1.0, 0.075),
@@ -89,7 +92,8 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             hovered: hsla(0.0, 0.0, 1.0, 0.05),
             text: hsla(0.0, 0.0, 0.96, 1.0),
             muted: hsla(0.0, 0.0, 0.62, 1.0),
-            accent: hsla(0.56, 0.72, 0.68, 1.0),
+            accent: hsla(0.75, 0.58, 0.65, 1.0),
+            tool_icon: hsla(0.75, 0.66, 0.40, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.07),
             shadow: hsla(0.0, 0.0, 0.0, 0.68),
             divider: hsla(0.0, 0.0, 1.0, 0.08),
@@ -101,7 +105,8 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             hovered: hsla(0.0, 0.0, 1.0, 0.26),
             text: hsla(0.66, 0.12, 0.14, 1.0),
             muted: hsla(0.66, 0.06, 0.42, 1.0),
-            accent: hsla(0.60, 0.58, 0.46, 1.0),
+            accent: hsla(0.75, 0.52, 0.44, 1.0),
+            tool_icon: hsla(0.75, 0.64, 0.42, 1.0),
             tile: hsla(0.0, 0.0, 1.0, 0.36),
             shadow: hsla(0.66, 0.10, 0.12, 0.26),
             divider: hsla(0.66, 0.08, 0.22, 0.12),

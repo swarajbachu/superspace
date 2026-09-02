@@ -6,7 +6,7 @@ use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, UniformListScrollHandle, Window, div, img, point, px, svg,
+    Styled as _, StyledImage as _, UniformListScrollHandle, Window, div, hsla, img, point, px, svg,
     uniform_list,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue, TimeQuery};
@@ -1904,14 +1904,21 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
             .child(entry.title.clone())
             .into_any_element();
     }
+    if entry.id == "fallback:web" {
+        return line_icon_tile("icons/browser.svg", hsla(0.58, 0.72, 0.52, 1.0), px(17.0));
+    }
+    if entry.id == "fallback:files" {
+        return line_icon_tile("icons/finder.svg", hsla(0.56, 0.78, 0.56, 1.0), px(18.0));
+    }
     let path = match entry.id.as_str() {
         "builtin:clipboard" => "icons/clipboard.svg",
-        "fallback:web" => "icons/search.svg",
-        "fallback:files" => "icons/file.svg",
         "tool:currency" => "icons/coins.svg",
         "tool:emoji" => "icons/smile.svg",
         "tool:uuid" => "icons/hash.svg",
         "tool:timestamp" => "icons/clock.svg",
+        "intent:currency" => "icons/coins.svg",
+        "intent:time" | "time:result" => "icons/clock.svg",
+        "intent:calculation" => "icons/calculator.svg",
         _ => match entry.kind {
             PaletteEntryKind::File => "icons/file.svg",
             PaletteEntryKind::Clipboard => "icons/clipboard.svg",
@@ -1920,7 +1927,31 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
             PaletteEntryKind::Application | PaletteEntryKind::Emoji => unreachable!(),
         },
     };
-    line_icon(path, colors, px(18.0))
+    if matches!(
+        entry.kind,
+        PaletteEntryKind::Tool | PaletteEntryKind::Command | PaletteEntryKind::Calculation
+    ) || entry.id == "builtin:clipboard"
+    {
+        line_icon_tile(path, colors.tool_icon, px(16.0))
+    } else {
+        line_icon(path, colors, px(18.0))
+    }
+}
+
+fn line_icon_tile(
+    path: &'static str,
+    background: gpui::Hsla,
+    icon_size: gpui::Pixels,
+) -> AnyElement {
+    div()
+        .size(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.0))
+        .bg(background)
+        .child(svg().path(path).size(icon_size).text_color(gpui::white()))
+        .into_any_element()
 }
 
 fn line_icon(path: &'static str, colors: theme::Theme, icon_size: gpui::Pixels) -> AnyElement {
