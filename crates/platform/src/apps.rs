@@ -93,6 +93,36 @@ pub fn open_path(path: impl AsRef<Path>) -> Result<u32, AppDiscoveryError> {
     Ok(child.id())
 }
 
+/// Return the display name of the application registered to open web URLs.
+///
+/// The lookup is best-effort because desktop registration can be unavailable in
+/// headless sessions or while the operating system is rebuilding its database.
+#[must_use]
+pub fn default_browser_name() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .args([
+                "-l",
+                "JavaScript",
+                "-e",
+                "ObjC.import(\"AppKit\"); $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString(\"https://www.google.com\")).lastPathComponent.js",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let name = String::from_utf8(output.stdout).ok()?;
+        let name = name.trim().trim_end_matches(".app").trim();
+        return (!name.is_empty()).then(|| name.to_owned());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Standard application roots for the current operating system.
 #[must_use]
 pub fn default_app_roots() -> Vec<PathBuf> {

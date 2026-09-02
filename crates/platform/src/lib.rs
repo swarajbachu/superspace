@@ -6,7 +6,8 @@ mod locale;
 mod text_input;
 
 pub use apps::{
-    AppDescriptor, AppDiscoveryError, LaunchSpec, default_app_roots, discover_apps, open_path,
+    AppDescriptor, AppDiscoveryError, LaunchSpec, default_app_roots, default_browser_name,
+    discover_apps, open_path,
 };
 pub use clipboard::{
     CaptureDisposition, ClipboardBackend, ClipboardCapturePolicy, ClipboardContext, ClipboardError,

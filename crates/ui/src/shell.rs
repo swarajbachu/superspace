@@ -188,6 +188,7 @@ pub struct Palette {
     preferences_path: PathBuf,
     focused_text_target: bool,
     locale: LocaleDefaults,
+    browser_name: String,
 }
 
 impl Palette {
@@ -202,6 +203,8 @@ impl Palette {
         let focus = search_input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let locale = superspace_platform::locale_defaults();
+        let browser_name =
+            superspace_platform::default_browser_name().unwrap_or_else(|| "your browser".into());
 
         let preferences_path = data_root().join("launcher.json");
         let preferences = LauncherPreferences::load(&preferences_path).unwrap_or_default();
@@ -295,6 +298,7 @@ impl Palette {
             preferences_path,
             focused_text_target,
             locale,
+            browser_name,
         }
     }
 
@@ -757,7 +761,7 @@ impl Palette {
             .collect::<Vec<_>>();
         if !completed_tools.is_empty() {
             let mut focused_entries = completed_tools;
-            focused_entries.extend(fallback_entries(&query));
+            focused_entries.extend(fallback_entries(&query, &self.browser_name));
             self.model.replace_entries_ordered(focused_entries);
             return;
         }
@@ -787,7 +791,8 @@ impl Palette {
         }));
         self.model.replace_entries(entries);
         if !query.is_empty() && self.model.results().next().is_none() {
-            self.model.replace_entries_ordered(fallback_entries(&query));
+            self.model
+                .replace_entries_ordered(fallback_entries(&query, &self.browser_name));
         }
     }
 
@@ -895,7 +900,7 @@ impl Palette {
         if let Some(input) = self.currency_input.as_deref()
             && !input.trim().is_empty()
         {
-            entries.extend(fallback_entries(input));
+            entries.extend(fallback_entries(input, &self.browser_name));
         }
         self.model.replace_entries_ordered(entries);
     }
@@ -2329,10 +2334,10 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
             .into_any_element();
     }
     if entry.id == "fallback:web" {
-        return line_icon_tile("icons/browser.svg", hsla(0.58, 0.72, 0.52, 1.0), px(17.0));
+        return brand_icon("icons/google.svg", px(20.0));
     }
     if entry.id == "fallback:files" {
-        return line_icon_tile("icons/finder.svg", hsla(0.56, 0.78, 0.56, 1.0), px(18.0));
+        return brand_icon("icons/finder.svg", px(24.0));
     }
     let path = match entry.id.as_str() {
         "builtin:clipboard" => "icons/clipboard.svg",
@@ -2356,13 +2361,13 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
         PaletteEntryKind::Tool | PaletteEntryKind::Command | PaletteEntryKind::Calculation
     ) || entry.id == "builtin:clipboard"
     {
-        line_icon_tile(path, colors.tool_icon, px(16.0))
+        tool_icon_tile(path, colors.tool_icon, px(16.0))
     } else {
         line_icon(path, colors, px(18.0))
     }
 }
 
-fn line_icon_tile(
+fn tool_icon_tile(
     path: &'static str,
     background: gpui::Hsla,
     icon_size: gpui::Pixels,
@@ -2372,9 +2377,23 @@ fn line_icon_tile(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
-        .bg(background)
+        .rounded(px(8.0))
+        .bg(linear_gradient(
+            135.0,
+            linear_color_stop(background.opacity(0.92), 0.0),
+            linear_color_stop(hsla(0.83, 0.72, 0.36, 1.0), 1.0),
+        ))
         .child(svg().path(path).size(icon_size).text_color(gpui::white()))
+        .into_any_element()
+}
+
+fn brand_icon(path: &'static str, icon_size: gpui::Pixels) -> AnyElement {
+    div()
+        .size(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(svg().path(path).size(icon_size))
         .into_any_element()
 }
 
@@ -2658,19 +2677,19 @@ fn builtin_entry(id: &str, title: &str, preview: &str, action_id: &str) -> Palet
     }
 }
 
-fn fallback_entries(query: &str) -> Vec<PaletteEntry> {
+fn fallback_entries(query: &str, browser_name: &str) -> Vec<PaletteEntry> {
     [
         (
             "fallback:web",
             format!("Search Google for “{query}”"),
-            "Open in your default browser",
+            format!("Open in {browser_name}"),
             "search-web",
             "Google Search",
         ),
         (
             "fallback:files",
             format!("Search files for “{query}”"),
-            "Continue in your file browser",
+            "Open in Finder".to_owned(),
             "search-files",
             "File Search",
         ),
@@ -2768,9 +2787,10 @@ mod tests {
 
     #[test]
     fn unmatched_queries_offer_real_web_and_file_actions() {
-        let entries = fallback_entries("one character");
+        let entries = fallback_entries("one character", "Aside");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].actions[0].id, "search-web");
+        assert_eq!(entries[0].subtitle, "Open in Aside");
         assert_eq!(entries[1].actions[0].id, "search-files");
         assert!(entries.iter().all(|entry| {
             entry
