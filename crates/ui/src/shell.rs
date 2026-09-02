@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -756,10 +755,22 @@ impl Render for Palette {
     )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::for_kind(self.theme_kind);
-        let matches = self.model.results().cloned().collect::<Vec<_>>();
         let selected = self.model.selected_entry().cloned();
         let selected_index = self.model.selected_index();
         let action_mode = self.model.mode() == PaletteMode::Actions;
+        if self.surface == PaletteSurface::Emoji && !action_mode {
+            return emoji_view(
+                self.model.results().count(),
+                selected.as_ref(),
+                self.search_input.clone(),
+                &self.emoji_scroll,
+                &self.focus,
+                self.focused_text_target,
+                colors,
+                cx,
+            );
+        }
+        let matches = self.model.results().cloned().collect::<Vec<_>>();
         if self.surface == PaletteSurface::Clipboard {
             let actions = selected
                 .as_ref()
@@ -781,19 +792,6 @@ impl Render for Palette {
                 self.search_input.clone(),
                 &self.results_scroll,
                 &self.focus,
-                colors,
-                cx,
-            );
-        }
-        if self.surface == PaletteSurface::Emoji && !action_mode {
-            return emoji_view(
-                &matches,
-                selected_index,
-                selected.as_ref(),
-                self.search_input.clone(),
-                &self.emoji_scroll,
-                &self.focus,
-                self.focused_text_target,
                 colors,
                 cx,
             );
@@ -1010,8 +1008,7 @@ impl Render for Palette {
     reason = "emoji picker is a focused surface with explicit dependencies"
 )]
 fn emoji_view(
-    entries: &[PaletteEntry],
-    selected_index: usize,
+    entry_count: usize,
     selected: Option<&PaletteEntry>,
     search_input: Entity<SearchInput>,
     results_scroll: &UniformListScrollHandle,
@@ -1027,8 +1024,7 @@ fn emoji_view(
     };
     let selected_name =
         selected.map_or("Choose an emoji or symbol", |entry| entry.subtitle.as_str());
-    let row_count = entries.len().div_ceil(8);
-    let grid_entries = Arc::<[PaletteEntry]>::from(entries.to_vec());
+    let row_count = entry_count.div_ceil(8);
 
     div()
         .id("emoji-picker")
@@ -1087,7 +1083,7 @@ fn emoji_view(
                         .bg(colors.surface)
                         .text_size(px(11.0))
                         .text_color(colors.muted)
-                        .child(format!("{} items", entries.len())),
+                        .child(format!("{entry_count} items")),
                 ),
         )
         .child(
@@ -1110,14 +1106,14 @@ fn emoji_view(
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors.muted)
                         .child(section_title)
-                        .child(format!("{}", entries.len())),
+                        .child(entry_count.to_string()),
                 )
                 .child(
                     div()
                         .id("emoji-grid-scroll")
                         .flex_1()
                         .min_h_0()
-                        .when(entries.is_empty(), |grid| {
+                        .when(entry_count == 0, |grid| {
                             grid.flex()
                                 .items_center()
                                 .justify_center()
@@ -1125,33 +1121,45 @@ fn emoji_view(
                                 .text_color(colors.muted)
                                 .child("No emoji or symbols match that search")
                         })
-                        .when(!entries.is_empty(), |grid| {
+                        .when(entry_count > 0, |grid| {
                             grid.child(
                                 uniform_list(
                                     "emoji-grid",
                                     row_count,
                                     cx.processor(
-                                        move |_this, rows: std::ops::Range<usize>, _, cx| {
-                                            rows.map(|row| {
-                                                let start = row * 8;
-                                                let end = (start + 8).min(grid_entries.len());
-                                                div()
-                                                    .h(px(64.0))
-                                                    .pb(px(6.0))
-                                                    .grid()
-                                                    .grid_cols(8)
-                                                    .gap(px(6.0))
-                                                    .children((start..end).map(|index| {
-                                                        emoji_tile(
-                                                            index,
-                                                            &grid_entries[index],
-                                                            index == selected_index,
-                                                            colors,
-                                                            cx,
-                                                        )
-                                                    }))
-                                            })
-                                            .collect::<Vec<_>>()
+                                        move |this, rows: std::ops::Range<usize>, _, cx| {
+                                            let first_entry = rows.start * 8;
+                                            let visible_entries = this
+                                                .model
+                                                .results()
+                                                .skip(first_entry)
+                                                .take((rows.end - rows.start) * 8)
+                                                .cloned()
+                                                .collect::<Vec<_>>();
+                                            let selected_index = this.model.selected_index();
+                                            rows.enumerate()
+                                                .map(|(row_offset, _row)| {
+                                                    let start = row_offset * 8;
+                                                    let end =
+                                                        (start + 8).min(visible_entries.len());
+                                                    div()
+                                                        .h(px(64.0))
+                                                        .pb(px(6.0))
+                                                        .grid()
+                                                        .grid_cols(8)
+                                                        .gap(px(6.0))
+                                                        .children((start..end).map(|offset| {
+                                                            let index = first_entry + offset;
+                                                            emoji_tile(
+                                                                index,
+                                                                &visible_entries[offset],
+                                                                index == selected_index,
+                                                                colors,
+                                                                cx,
+                                                            )
+                                                        }))
+                                                })
+                                                .collect::<Vec<_>>()
                                         },
                                     ),
                                 )
