@@ -4,6 +4,7 @@ use std::process::Command;
 
 use superspace_productivity::{
     Item, ItemContent, ProductivityStore, resolve_command, resolve_quicklink, search_emoji,
+    search_symbols,
 };
 
 use crate::{ActionItem, PaletteEntry, PaletteEntryKind};
@@ -65,7 +66,7 @@ impl MiniTools {
     }
 
     pub(crate) fn emoji_entries(query: &str) -> Vec<PaletteEntry> {
-        search_emoji(query, 150)
+        let mut entries = search_emoji(query, 150)
             .into_iter()
             .map(|emoji| PaletteEntry {
                 id: format!("emoji:{}", emoji.value),
@@ -89,7 +90,32 @@ impl MiniTools {
                     shortcut: Some("↵".into()),
                 }],
             })
-            .collect()
+            .collect::<Vec<_>>();
+        entries.extend(search_symbols(query, 150).into_iter().map(|symbol| {
+            PaletteEntry {
+                id: format!("symbol:{}", symbol.value),
+                title: symbol.value.into(),
+                subtitle: symbol.name.into(),
+                kind: PaletteEntryKind::Emoji,
+                icon: None,
+                keywords: symbol
+                    .keywords
+                    .iter()
+                    .copied()
+                    .chain([symbol.name])
+                    .map(str::to_owned)
+                    .collect(),
+                preview: format!("Copy {}", symbol.name),
+                frequency: 0,
+                favorite: false,
+                actions: vec![ActionItem {
+                    id: "copy-symbol".into(),
+                    title: "Copy Symbol".into(),
+                    shortcut: Some("↵".into()),
+                }],
+            }
+        }));
+        entries
     }
 
     pub(crate) fn text(&self, id: &str) -> Option<String> {
@@ -173,8 +199,8 @@ fn builtin_entries() -> Vec<PaletteEntry> {
         ),
         (
             "tool:emoji",
-            "Emoji Picker",
-            "Find and copy emoji",
+            "Emoji & Symbols",
+            "Find and copy emoji or symbols",
             "open-emoji",
         ),
         (
@@ -226,5 +252,13 @@ mod tests {
         let mut model = crate::PaletteModel::new(entries);
         model.set_query("heart");
         assert!(model.results().next().is_some());
+
+        let symbols = MiniTools::emoji_entries("command");
+        assert!(symbols.iter().any(|entry| entry.title == "⌘"));
+        assert!(
+            symbols
+                .iter()
+                .any(|entry| entry.actions[0].id == "copy-symbol")
+        );
     }
 }

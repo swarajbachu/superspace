@@ -427,8 +427,11 @@ impl Palette {
                 self.notice = Some(format!("Copied {value} {}", result.query.to));
             }
             false
-        } else if action_id == "copy-emoji" {
-            if let Some(value) = entry_id.strip_prefix("emoji:") {
+        } else if action_id == "copy-emoji" || action_id == "copy-symbol" {
+            if let Some(value) = entry_id
+                .strip_prefix("emoji:")
+                .or_else(|| entry_id.strip_prefix("symbol:"))
+            {
                 cx.write_to_clipboard(ClipboardItem::new_string(value.to_owned()));
                 self.notice = Some(format!("Copied {value}"));
             }
@@ -650,7 +653,7 @@ impl Palette {
         let placeholder = match surface {
             PaletteSurface::Launcher => "Search apps, files, and tools…",
             PaletteSurface::Clipboard => "Search clipboard history…",
-            PaletteSurface::Emoji => "Search emoji by name…",
+            PaletteSurface::Emoji => "Search emoji and symbols…",
             PaletteSurface::Currency => "Try 100 USD to EUR or 0.1 BTC in USD…",
         };
         self.search_input
@@ -785,7 +788,7 @@ impl Render for Palette {
         } else if self.surface != PaletteSurface::Launcher {
             match self.surface {
                 PaletteSurface::Clipboard => "Clipboard History",
-                PaletteSurface::Emoji => "Emoji Picker",
+                PaletteSurface::Emoji => "Emoji & Symbols",
                 PaletteSurface::Currency => "Currency & Crypto",
                 PaletteSurface::Launcher => unreachable!(),
             }
@@ -817,7 +820,7 @@ impl Render for Palette {
             if self.surface != PaletteSurface::Launcher {
                 match self.surface {
                     PaletteSurface::Clipboard => format!("{} clipboard items", matches.len()),
-                    PaletteSurface::Emoji => format!("{} emoji", matches.len()),
+                    PaletteSurface::Emoji => format!("{} items", matches.len()),
                     PaletteSurface::Currency => "Live rates · cached for offline use".into(),
                     PaletteSurface::Launcher => unreachable!(),
                 }
@@ -978,7 +981,8 @@ fn emoji_view(
     } else {
         "Search Results"
     };
-    let selected_name = selected.map_or("Choose an emoji", |entry| entry.subtitle.as_str());
+    let selected_name =
+        selected.map_or("Choose an emoji or symbol", |entry| entry.subtitle.as_str());
 
     div()
         .id("emoji-picker")
@@ -1037,7 +1041,7 @@ fn emoji_view(
                         .bg(colors.surface)
                         .text_size(px(11.0))
                         .text_color(colors.muted)
-                        .child(format!("{} emoji", entries.len())),
+                        .child(format!("{} items", entries.len())),
                 ),
         )
         .child(
@@ -1075,7 +1079,7 @@ fn emoji_view(
                                 .justify_center()
                                 .text_size(px(12.0))
                                 .text_color(colors.muted)
-                                .child("No emoji match that search")
+                                .child("No emoji or symbols match that search")
                         })
                         .when(!entries.is_empty(), |grid| {
                             grid.grid().grid_cols(8).gap(px(6.0)).children(
@@ -1898,7 +1902,7 @@ fn currency_result_entry(result: &Conversion, input: &str) -> PaletteEntry {
 const fn empty_title(surface: PaletteSurface) -> &'static str {
     match surface {
         PaletteSurface::Currency => "Type a conversion",
-        PaletteSurface::Emoji => "No emoji found",
+        PaletteSurface::Emoji => "No emoji or symbol found",
         PaletteSurface::Clipboard => "No clipboard items",
         PaletteSurface::Launcher => "No matches found",
     }

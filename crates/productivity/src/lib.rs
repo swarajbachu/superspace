@@ -263,6 +263,17 @@ pub struct Emoji {
     pub keywords: Vec<&'static str>,
 }
 
+/// A searchable typographic, mathematical, currency, or keyboard symbol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Symbol {
+    /// Unicode grapheme.
+    pub value: &'static str,
+    /// Human-readable name.
+    pub name: &'static str,
+    /// Search aliases.
+    pub keywords: &'static [&'static str],
+}
+
 /// Search the built-in emoji catalog.
 #[must_use]
 pub fn search_emoji(query: &str, limit: usize) -> Vec<Emoji> {
@@ -283,6 +294,26 @@ pub fn search_emoji(query: &str, limit: usize) -> Vec<Emoji> {
                 .chain(extra_emoji_keywords(emoji.as_str()).iter().copied())
                 .collect(),
         })
+        .collect()
+}
+
+/// Search the built-in symbol catalog by name or common alias.
+#[must_use]
+pub fn search_symbols(query: &str, limit: usize) -> Vec<Symbol> {
+    let query = query.trim().to_ascii_lowercase();
+    SYMBOLS
+        .iter()
+        .copied()
+        .filter(|symbol| {
+            query.is_empty()
+                || symbol.value == query
+                || symbol.name.contains(&query)
+                || symbol
+                    .keywords
+                    .iter()
+                    .any(|keyword| keyword.contains(&query))
+        })
+        .take(limit)
         .collect()
 }
 
@@ -444,6 +475,100 @@ fn percent_encode(bytes: &[u8]) -> String {
     output
 }
 
+macro_rules! symbol {
+    ($value:literal, $name:literal, [$($keyword:literal),* $(,)?]) => {
+        Symbol { value: $value, name: $name, keywords: &[$($keyword),*] }
+    };
+}
+
+const SYMBOLS: &[Symbol] = &[
+    symbol!("$", "dollar sign", ["currency", "usd", "money"]),
+    symbol!("¢", "cent sign", ["currency", "money"]),
+    symbol!("£", "pound sign", ["currency", "gbp", "money"]),
+    symbol!("€", "euro sign", ["currency", "eur", "money"]),
+    symbol!("¥", "yen sign", ["currency", "jpy", "money"]),
+    symbol!("₹", "rupee sign", ["currency", "inr", "money"]),
+    symbol!("₽", "ruble sign", ["currency", "rub", "money"]),
+    symbol!("₩", "won sign", ["currency", "krw", "money"]),
+    symbol!("₿", "bitcoin sign", ["currency", "btc", "crypto"]),
+    symbol!("±", "plus minus", ["math", "add", "subtract"]),
+    symbol!("×", "multiplication sign", ["math", "times", "multiply"]),
+    symbol!("÷", "division sign", ["math", "divide"]),
+    symbol!("≠", "not equal", ["math", "inequality"]),
+    symbol!("≈", "approximately equal", ["math", "approx"]),
+    symbol!("≤", "less than or equal", ["math", "inequality"]),
+    symbol!("≥", "greater than or equal", ["math", "inequality"]),
+    symbol!("∞", "infinity", ["math", "forever"]),
+    symbol!("√", "square root", ["math", "radical"]),
+    symbol!("∑", "summation", ["math", "sum", "sigma"]),
+    symbol!("∏", "product", ["math", "pi"]),
+    symbol!("∫", "integral", ["math", "calculus"]),
+    symbol!("∂", "partial differential", ["math", "calculus"]),
+    symbol!("∆", "delta", ["math", "change", "triangle"]),
+    symbol!("π", "pi", ["math", "greek"]),
+    symbol!("°", "degree sign", ["temperature", "angle"]),
+    symbol!("‰", "per mille", ["percent", "thousand"]),
+    symbol!("←", "left arrow", ["arrow", "back"]),
+    symbol!("↑", "up arrow", ["arrow"]),
+    symbol!("→", "right arrow", ["arrow", "forward"]),
+    symbol!("↓", "down arrow", ["arrow"]),
+    symbol!("↔", "left right arrow", ["arrow", "horizontal"]),
+    symbol!("↕", "up down arrow", ["arrow", "vertical"]),
+    symbol!("↖", "up left arrow", ["arrow", "diagonal"]),
+    symbol!("↗", "up right arrow", ["arrow", "diagonal"]),
+    symbol!("↘", "down right arrow", ["arrow", "diagonal"]),
+    symbol!("↙", "down left arrow", ["arrow", "diagonal"]),
+    symbol!("⇒", "double right arrow", ["arrow", "implies"]),
+    symbol!("⇔", "double left right arrow", ["arrow", "equivalent"]),
+    symbol!("©", "copyright", ["legal"]),
+    symbol!("®", "registered trademark", ["legal", "trademark"]),
+    symbol!("™", "trademark", ["legal", "tm"]),
+    symbol!("§", "section sign", ["legal", "paragraph"]),
+    symbol!("¶", "paragraph sign", ["pilcrow", "writing"]),
+    symbol!("†", "dagger", ["footnote", "cross"]),
+    symbol!("‡", "double dagger", ["footnote", "cross"]),
+    symbol!("•", "bullet", ["dot", "list"]),
+    symbol!("…", "ellipsis", ["dots", "more"]),
+    symbol!("–", "en dash", ["dash", "typography"]),
+    symbol!("—", "em dash", ["dash", "typography"]),
+    symbol!("“", "left double quote", ["quote", "typography"]),
+    symbol!("”", "right double quote", ["quote", "typography"]),
+    symbol!("‘", "left single quote", ["quote", "typography"]),
+    symbol!("’", "right single quote", ["apostrophe", "typography"]),
+    symbol!("★", "filled star", ["shape", "favorite"]),
+    symbol!("☆", "outline star", ["shape", "favorite"]),
+    symbol!("●", "filled circle", ["shape", "dot"]),
+    symbol!("○", "outline circle", ["shape"]),
+    symbol!("■", "filled square", ["shape"]),
+    symbol!("□", "outline square", ["shape", "checkbox"]),
+    symbol!("▲", "filled up triangle", ["shape", "arrow"]),
+    symbol!("△", "outline up triangle", ["shape"]),
+    symbol!("▼", "filled down triangle", ["shape", "arrow"]),
+    symbol!("▽", "outline down triangle", ["shape"]),
+    symbol!("◆", "filled diamond", ["shape"]),
+    symbol!("◇", "outline diamond", ["shape"]),
+    symbol!("✓", "check mark", ["done", "success", "tick"]),
+    symbol!("✔", "heavy check mark", ["done", "success", "tick"]),
+    symbol!("✕", "multiplication x", ["close", "delete"]),
+    symbol!("✖", "heavy multiplication x", ["close", "delete"]),
+    symbol!("⌘", "command key", ["mac", "keyboard", "cmd"]),
+    symbol!("⌥", "option key", ["mac", "keyboard", "alt"]),
+    symbol!("⇧", "shift key", ["mac", "keyboard"]),
+    symbol!("⌃", "control key", ["mac", "keyboard", "ctrl"]),
+    symbol!("⎋", "escape key", ["mac", "keyboard", "esc"]),
+    symbol!("↩", "return key", ["mac", "keyboard", "enter"]),
+    symbol!("⌫", "delete left key", ["mac", "keyboard", "backspace"]),
+    symbol!("⌦", "delete right key", ["mac", "keyboard"]),
+    symbol!("␣", "space key", ["keyboard", "spacebar"]),
+    symbol!("α", "alpha", ["greek"]),
+    symbol!("β", "beta", ["greek"]),
+    symbol!("γ", "gamma", ["greek"]),
+    symbol!("δ", "delta", ["greek"]),
+    symbol!("λ", "lambda", ["greek", "programming"]),
+    symbol!("μ", "mu", ["greek", "micro"]),
+    symbol!("Ω", "omega", ["greek", "ohm"]),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +636,8 @@ mod tests {
         assert_eq!(search_emoji("", 256).len(), 256);
         assert_eq!(search_emoji("ship", 5)[0].value, "🚀");
         assert_eq!(search_emoji("like", 1)[0].value, "❤️");
+        assert_eq!(search_symbols("command", 1)[0].value, "⌘");
+        assert!(search_symbols("math", 50).len() > 10);
     }
 
     #[test]
