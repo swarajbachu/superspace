@@ -2044,26 +2044,21 @@ fn calculation_row(
     cx: &mut Context<Palette>,
 ) -> AnyElement {
     if !entry.actions.is_empty() {
-        let white = hsla(0.0, 0.0, 1.0, 1.0);
-        let white_muted = hsla(0.0, 0.0, 1.0, 0.64);
-        let white_divider = hsla(0.0, 0.0, 1.0, 0.18);
         return div()
             .id(("calculation-row", index))
-            .h(px(126.0))
+            .h(px(104.0))
             .mx(px(2.0))
             .mb(px(4.0))
             .flex()
             .items_stretch()
             .overflow_hidden()
-            .rounded(px(13.0))
-            .bg(linear_gradient(
-                112.0,
-                linear_color_stop(hsla(0.76, 0.82, 0.29, 1.0), 0.0),
-                linear_color_stop(hsla(0.86, 0.78, 0.43, 1.0), 1.0),
-            ))
-            .when(selected, |card| {
-                card.border_1().border_color(hsla(0.0, 0.0, 1.0, 0.34))
+            .rounded(px(10.0))
+            .bg(if selected {
+                colors.selected
+            } else {
+                colors.surface
             })
+            .hover(move |card| card.bg(colors.hovered))
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     if event.click_count() >= 2 {
@@ -2092,32 +2087,32 @@ fn calculation_row(
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_center()
-                            .text_size(px(21.0))
+                            .text_size(px(19.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(white)
+                            .text_color(colors.text)
                             .child(entry.subtitle),
                     )
                     .child(
                         div()
                             .text_size(px(10.0))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(white_muted)
+                            .text_color(colors.muted)
                             .child("INPUT"),
                     ),
             )
             .child(
                 div()
-                    .w(px(56.0))
+                    .w(px(48.0))
                     .h_full()
                     .flex_shrink_0()
                     .border_l_1()
                     .border_r_1()
-                    .border_color(white_divider)
+                    .border_color(colors.divider)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(21.0))
-                    .text_color(white_muted)
+                    .text_size(px(18.0))
+                    .text_color(colors.muted)
                     .child("→"),
             )
             .child(
@@ -2137,9 +2132,9 @@ fn calculation_row(
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .text_center()
-                            .text_size(px(23.0))
+                            .text_size(px(21.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(white)
+                            .text_color(colors.text)
                             .child(entry.title),
                     )
                     .child(
@@ -2150,7 +2145,7 @@ fn calculation_row(
                             .text_ellipsis()
                             .text_center()
                             .text_size(px(10.0))
-                            .text_color(white_muted)
+                            .text_color(colors.muted)
                             .child(entry.preview),
                     ),
             )
