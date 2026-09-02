@@ -780,6 +780,10 @@ impl Render for Palette {
                 cx,
             );
         }
+        let fallback_results = !matches.is_empty()
+            && matches
+                .iter()
+                .all(|entry| entry.id.starts_with("fallback:"));
         let section_title = if action_mode {
             selected.as_ref().map_or_else(
                 || "Actions".into(),
@@ -793,8 +797,10 @@ impl Render for Palette {
                 PaletteSurface::Launcher => unreachable!(),
             }
             .into()
+        } else if fallback_results {
+            format!("Use “{}” with…", self.model.query())
         } else if self.model.query().is_empty() {
-            "Suggestions".into()
+            "Favorites".into()
         } else {
             "Results".into()
         };
@@ -830,6 +836,14 @@ impl Render for Palette {
                 format!("{} results", matches.len())
             }
         });
+        let primary_action = if action_mode {
+            "Run".to_owned()
+        } else {
+            selected
+                .as_ref()
+                .and_then(|entry| entry.actions.first())
+                .map_or_else(|| "Open".to_owned(), |action| action.title.clone())
+        };
 
         div()
             .id("superspace-palette")
@@ -851,13 +865,20 @@ impl Render for Palette {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .child(
-                div().h(px(52.0)).px(px(16.0)).flex().items_center().child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h(px(38.0))
-                        .child(self.search_input.clone()),
-                ),
+                div()
+                    .h(px(54.0))
+                    .px(px(16.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(line_icon("icons/search.svg", colors, px(18.0)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(38.0))
+                            .child(self.search_input.clone()),
+                    ),
             )
             .child(
                 div()
@@ -935,15 +956,19 @@ impl Render for Palette {
                     )
                     .child(
                         div()
+                            .h(px(28.0))
+                            .px(px(9.0))
                             .flex()
                             .items_center()
                             .gap(px(7.0))
+                            .rounded(px(8.0))
+                            .bg(colors.surface)
                             .text_size(px(11.0))
                             .text_color(colors.muted)
-                            .child(if action_mode { "Run" } else { "Open" })
+                            .child(primary_action)
                             .child(keycap("↵", colors))
                             .when(!action_mode && selected.is_some(), |footer| {
-                                footer.child("Actions").child(keycap("⌘ K", colors))
+                                footer.child(keycap("⌘ K", colors))
                             }),
                     ),
             )
@@ -1636,17 +1661,13 @@ fn calculation_row(
 ) -> AnyElement {
     div()
         .id(("calculation-row", index))
-        .h(px(78.0))
-        .px(px(14.0))
+        .h(px(48.0))
+        .px(px(8.0))
         .flex()
         .items_center()
-        .gap(px(14.0))
+        .gap(px(9.0))
         .rounded(px(8.0))
-        .bg(if selected {
-            colors.selected
-        } else {
-            colors.surface
-        })
+        .when(selected, |row| row.bg(colors.selected))
         .hover(move |row| {
             row.bg(if selected {
                 colors.selected
@@ -1665,41 +1686,47 @@ fn calculation_row(
                 cx.notify();
             }),
         )
+        .child(line_icon("icons/calculator.svg", colors, px(18.0)))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(14.0))
+                .gap(px(9.0))
                 .child(
                     div()
-                        .flex_1()
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(17.0))
-                        .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(12.0))
+                        .text_color(colors.muted)
                         .child(entry.subtitle),
                 )
                 .child(
                     div()
-                        .text_size(px(15.0))
+                        .text_size(px(12.0))
                         .text_color(colors.muted)
                         .child("→"),
                 )
                 .child(
                     div()
-                        .flex_1()
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_size(px(21.0))
+                        .text_size(px(15.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(entry.title),
                 ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(11.0))
+                .text_color(colors.muted)
+                .child("Copy result"),
         )
         .into_any_element()
 }
@@ -1786,6 +1813,8 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
     }
     let path = match entry.id.as_str() {
         "builtin:clipboard" => "icons/clipboard.svg",
+        "fallback:web" => "icons/search.svg",
+        "fallback:files" => "icons/file.svg",
         "tool:currency" => "icons/coins.svg",
         "tool:emoji" => "icons/smile.svg",
         "tool:uuid" => "icons/hash.svg",
