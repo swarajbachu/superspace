@@ -7,7 +7,7 @@ use gpui::{
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ListAlignment, ListState, ParentElement as _, Render, ScrollHandle,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, hsla, img, list,
-    point, px, svg,
+    point, px, size, svg,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue, TimeQuery};
 use superspace_core::LauncherPreferences;
@@ -781,10 +781,15 @@ impl Palette {
     fn enter_surface(
         &mut self,
         surface: PaletteSurface,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.surface = surface;
+        window.resize(if surface == PaletteSurface::Emoji {
+            size(px(620.0), px(500.0))
+        } else {
+            size(px(800.0), px(500.0))
+        });
         self.clipboard_filter_open = false;
         self.emoji_category_open = false;
         self.notice = None;
@@ -1343,6 +1348,7 @@ fn emoji_view(
                                         let selected_index = this.model.selected_index();
                                         div()
                                             .h(px(82.0))
+                                            .w_full()
                                             .pb(px(8.0))
                                             .grid()
                                             .grid_cols(8)
@@ -1474,6 +1480,7 @@ fn emoji_tile(
     div()
         .id(("emoji-tile", index))
         .h(px(74.0))
+        .w_full()
         .flex()
         .items_center()
         .justify_center()
