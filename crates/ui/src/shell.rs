@@ -1747,14 +1747,7 @@ fn clipboard_view(
                 .justify_between()
                 .text_size(px(11.0))
                 .text_color(colors.muted)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(7.0))
-                        .child(line_icon("icons/clipboard.svg", colors, px(16.0)))
-                        .child("Clipboard History"),
-                )
+                .child(div().flex().items_center().child("Clipboard History"))
                 .child(
                     div()
                         .flex()
@@ -1850,7 +1843,6 @@ fn clipboard_row(
                 cx.notify();
             }),
         )
-        .child(entry_icon(&entry, colors))
         .child(
             div()
                 .flex_1()
