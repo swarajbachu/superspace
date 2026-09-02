@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, point, px, svg,
+    ParentElement as _, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, UniformListScrollHandle, Window, div, img, point, px, svg,
+    uniform_list,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue};
 use superspace_core::LauncherPreferences;
@@ -89,6 +91,7 @@ pub struct Palette {
     focus: FocusHandle,
     search_input: Entity<SearchInput>,
     results_scroll: ScrollHandle,
+    emoji_scroll: UniformListScrollHandle,
     surface: PaletteSurface,
     notice: Option<String>,
     application_count: usize,
@@ -113,6 +116,7 @@ impl Palette {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search_input = cx.new(SearchInput::new);
         let results_scroll = ScrollHandle::new();
+        let emoji_scroll = UniformListScrollHandle::new();
         let focus = search_input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
 
@@ -175,6 +179,7 @@ impl Palette {
             palette.notice = None;
             palette.refresh_results(cx);
             palette.results_scroll.scroll_to_item(0);
+            palette.emoji_scroll.scroll_to_item(0, ScrollStrategy::Top);
             cx.notify();
         })
         .detach();
@@ -184,6 +189,7 @@ impl Palette {
             focus,
             search_input,
             results_scroll,
+            emoji_scroll,
             surface: PaletteSurface::Launcher,
             notice: None,
             application_count,
@@ -286,8 +292,8 @@ impl Palette {
             };
             if let Some(offset) = offset {
                 self.model.move_selection_by(offset);
-                self.results_scroll
-                    .scroll_to_item(self.model.selected_index());
+                self.emoji_scroll
+                    .scroll_to_item(self.model.selected_index() / 8, ScrollStrategy::Nearest);
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -659,6 +665,7 @@ impl Palette {
         self.search_input
             .update(cx, |input, cx| input.reset(placeholder, cx));
         self.results_scroll.scroll_to_item(0);
+        self.emoji_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh_results(cx);
     }
 
@@ -774,7 +781,7 @@ impl Render for Palette {
                 selected_index,
                 selected.as_ref(),
                 self.search_input.clone(),
-                &self.results_scroll,
+                &self.emoji_scroll,
                 &self.focus,
                 colors,
                 cx,
@@ -996,7 +1003,7 @@ fn emoji_view(
     selected_index: usize,
     selected: Option<&PaletteEntry>,
     search_input: Entity<SearchInput>,
-    results_scroll: &ScrollHandle,
+    results_scroll: &UniformListScrollHandle,
     focus: &FocusHandle,
     colors: theme::Theme,
     cx: &mut Context<Palette>,
@@ -1008,6 +1015,8 @@ fn emoji_view(
     };
     let selected_name =
         selected.map_or("Choose an emoji or symbol", |entry| entry.subtitle.as_str());
+    let row_count = entries.len().div_ceil(8);
+    let grid_entries = Arc::<[PaletteEntry]>::from(entries.to_vec());
 
     div()
         .id("emoji-picker")
@@ -1096,8 +1105,6 @@ fn emoji_view(
                         .id("emoji-grid-scroll")
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
-                        .track_scroll(results_scroll)
                         .when(entries.is_empty(), |grid| {
                             grid.flex()
                                 .items_center()
@@ -1107,10 +1114,37 @@ fn emoji_view(
                                 .child("No emoji or symbols match that search")
                         })
                         .when(!entries.is_empty(), |grid| {
-                            grid.grid().grid_cols(8).gap(px(6.0)).children(
-                                entries.iter().enumerate().map(|(index, entry)| {
-                                    emoji_tile(index, entry, index == selected_index, colors, cx)
-                                }),
+                            grid.child(
+                                uniform_list(
+                                    "emoji-grid",
+                                    row_count,
+                                    cx.processor(
+                                        move |_this, rows: std::ops::Range<usize>, _, cx| {
+                                            rows.map(|row| {
+                                                let start = row * 8;
+                                                let end = (start + 8).min(grid_entries.len());
+                                                div()
+                                                    .h(px(64.0))
+                                                    .pb(px(6.0))
+                                                    .grid()
+                                                    .grid_cols(8)
+                                                    .gap(px(6.0))
+                                                    .children((start..end).map(|index| {
+                                                        emoji_tile(
+                                                            index,
+                                                            &grid_entries[index],
+                                                            index == selected_index,
+                                                            colors,
+                                                            cx,
+                                                        )
+                                                    }))
+                                            })
+                                            .collect::<Vec<_>>()
+                                        },
+                                    ),
+                                )
+                                .size_full()
+                                .track_scroll(results_scroll),
                             )
                         }),
                 ),
