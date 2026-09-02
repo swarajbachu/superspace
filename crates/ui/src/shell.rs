@@ -9,9 +9,9 @@ use gpui::{
     Styled as _, StyledImage as _, UniformListScrollHandle, Window, div, img, point, px, svg,
     uniform_list,
 };
-use superspace_calculator::{Calculator, CurrencyQuery, ResultValue};
+use superspace_calculator::{Calculator, CurrencyQuery, ResultValue, TimeQuery};
 use superspace_core::LauncherPreferences;
-use superspace_platform::AppDescriptor;
+use superspace_platform::{AppDescriptor, LocaleDefaults};
 use superspace_productivity::resolve_quicklink;
 use superspace_storage::ClipboardKind;
 
@@ -110,6 +110,7 @@ pub struct Palette {
     preferences: LauncherPreferences,
     preferences_path: PathBuf,
     focused_text_target: bool,
+    locale: LocaleDefaults,
 }
 
 impl Palette {
@@ -123,6 +124,7 @@ impl Palette {
         let emoji_scroll = UniformListScrollHandle::new();
         let focus = search_input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
+        let locale = superspace_platform::locale_defaults();
 
         let preferences_path = data_root().join("launcher.json");
         let preferences = LauncherPreferences::load(&preferences_path).unwrap_or_default();
@@ -213,6 +215,7 @@ impl Palette {
             preferences,
             preferences_path,
             focused_text_target,
+            locale,
         }
     }
 
@@ -577,7 +580,7 @@ impl Palette {
         }
         if self.surface == PaletteSurface::Emoji {
             self.model
-                .replace_entries(MiniTools::emoji_entries(self.model.query()));
+                .replace_entries_ordered(MiniTools::emoji_entries(self.model.query()));
             return;
         }
         if self.surface == PaletteSurface::Currency {
@@ -585,7 +588,7 @@ impl Palette {
             return;
         }
         let query = self.model.query().trim().to_owned();
-        if CurrencyQuery::parse(&query).is_some() {
+        if parse_currency_for_locale(&query, &self.locale.currency).is_some() {
             self.refresh_currency(cx);
             return;
         }
@@ -606,6 +609,35 @@ impl Palette {
         };
         let mut entries = self.base_entries.clone();
         entries.extend(keyword_entry);
+        if let Some(time) =
+            TimeQuery::parse(&query, &self.locale.time_zone).and_then(|query| query.convert().ok())
+        {
+            let output = format!("{} {}", time.output_time, time.to_zone);
+            let input = format!("{} {}", time.input_time, time.from_zone);
+            let day = match time.day_offset {
+                -1 => " · previous day",
+                1 => " · next day",
+                _ => "",
+            };
+            let id = format!("time:{query}");
+            self.calculations.insert(id.clone(), output.clone());
+            entries.push(PaletteEntry {
+                id,
+                title: output,
+                subtitle: input,
+                kind: PaletteEntryKind::Calculation,
+                icon: None,
+                keywords: vec![query.clone(), "time zone conversion".into()],
+                preview: format!("Local time{day}"),
+                frequency: u32::MAX,
+                favorite: true,
+                actions: vec![ActionItem {
+                    id: "copy-result".into(),
+                    title: "Copy Time".into(),
+                    shortcut: Some("↵".into()),
+                }],
+            });
+        }
         if let Some(result) = calculate(&query) {
             let id = format!("calculation:{query}");
             self.calculations.insert(id.clone(), result.clone());
@@ -625,6 +657,8 @@ impl Palette {
                     shortcut: Some("↵".into()),
                 }],
             });
+        } else if let Some(intent) = tool_intent(&query) {
+            entries.push(intent_entry(intent, &query));
         }
         entries.extend(matches.into_iter().map(|matched| {
             let id = format!("file:{}", matched.path.display());
@@ -652,7 +686,7 @@ impl Palette {
         }));
         self.model.replace_entries(entries);
         if !query.is_empty() && self.model.results().next().is_none() {
-            self.model.replace_entries(fallback_entries(&query));
+            self.model.replace_entries_ordered(fallback_entries(&query));
         }
     }
 
@@ -679,7 +713,8 @@ impl Palette {
     }
 
     fn refresh_currency(&mut self, cx: &mut Context<Self>) {
-        let Some(query) = CurrencyQuery::parse(self.model.query()) else {
+        let Some(query) = parse_currency_for_locale(self.model.query(), &self.locale.currency)
+        else {
             self.currency_query = None;
             self.currency_input = None;
             self.currency_result = None;
@@ -1986,6 +2021,79 @@ fn currency_result_entry(result: &Conversion, input: &str) -> PaletteEntry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolIntent {
+    Calculation,
+    Currency,
+    Time,
+}
+
+fn tool_intent(query: &str) -> Option<ToolIntent> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() || !query.chars().next()?.is_ascii_digit() {
+        return None;
+    }
+    if query.contains("am") || query.contains("pm") {
+        return Some(ToolIntent::Time);
+    }
+    if query
+        .chars()
+        .last()
+        .is_some_and(|character| matches!(character, '+' | '-' | '*' | '/' | '%' | '^'))
+    {
+        return Some(ToolIntent::Calculation);
+    }
+    let suffix = query
+        .trim_start_matches(|character: char| character.is_ascii_digit() || character == '.')
+        .trim();
+    const CURRENCY_PREFIXES: &[&str] = &[
+        "u", "us", "e", "eu", "g", "gb", "i", "in", "j", "jp", "c", "ca", "a", "au", "b", "bt",
+        "et",
+    ];
+    (!suffix.is_empty() && CURRENCY_PREFIXES.contains(&suffix)).then_some(ToolIntent::Currency)
+}
+
+fn intent_entry(intent: ToolIntent, query: &str) -> PaletteEntry {
+    let (id, title, preview) = match intent {
+        ToolIntent::Calculation => (
+            "intent:calculation",
+            "Finish the calculation…",
+            "Calculator",
+        ),
+        ToolIntent::Currency => (
+            "intent:currency",
+            "Finish the currency code…",
+            "Currency converter",
+        ),
+        ToolIntent::Time => ("intent:time", "Finish the time zone…", "Time converter"),
+    };
+    PaletteEntry {
+        id: id.into(),
+        title: title.into(),
+        subtitle: query.into(),
+        kind: PaletteEntryKind::Calculation,
+        icon: None,
+        keywords: vec![query.into()],
+        preview: preview.into(),
+        frequency: u32::MAX,
+        favorite: true,
+        actions: Vec::new(),
+    }
+}
+
+fn parse_currency_for_locale(input: &str, local_currency: &str) -> Option<CurrencyQuery> {
+    CurrencyQuery::parse(input)
+        .or_else(|| CurrencyQuery::parse_with_default(input, local_currency))
+        .or_else(|| {
+            let fallback = if local_currency.eq_ignore_ascii_case("USD") {
+                "EUR"
+            } else {
+                "USD"
+            };
+            CurrencyQuery::parse_with_default(input, fallback)
+        })
+}
+
 const fn empty_title(surface: PaletteSurface) -> &'static str {
     match surface {
         PaletteSurface::Currency => "Type a conversion",
@@ -2174,7 +2282,10 @@ fn default_data_root() -> PathBuf {
 mod tests {
     use rust_decimal::Decimal;
 
-    use super::{ClipboardFilter, currency_loading_entry, currency_result_entry, fallback_entries};
+    use super::{
+        ClipboardFilter, ToolIntent, currency_loading_entry, currency_result_entry,
+        fallback_entries, parse_currency_for_locale, tool_intent,
+    };
     use crate::{PaletteModel, currency::Conversion};
     use superspace_calculator::CurrencyQuery;
 
@@ -2216,5 +2327,14 @@ mod tests {
                 .iter()
                 .any(|keyword| keyword == "one character")
         }));
+    }
+
+    #[test]
+    fn shorthand_tools_activate_before_generic_fallbacks() {
+        let currency = parse_currency_for_locale("1usd", "INR").expect("currency");
+        assert_eq!(currency.to.as_str(), "INR");
+        assert_eq!(tool_intent("5 +"), Some(ToolIntent::Calculation));
+        assert_eq!(tool_intent("1am p"), Some(ToolIntent::Time));
+        assert_eq!(tool_intent("1us"), Some(ToolIntent::Currency));
     }
 }
