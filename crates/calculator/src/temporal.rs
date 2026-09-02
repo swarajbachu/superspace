@@ -1,6 +1,6 @@
 use chrono::{
-    DateTime, Datelike as _, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone as _,
-    Weekday,
+    DateTime, Datelike as _, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime,
+    TimeZone as _, Utc, Weekday,
 };
 use chrono_tz::Tz;
 use thiserror::Error;
@@ -32,6 +32,118 @@ pub enum TimeSpanUnit {
 /// Pure date, workday, timespan, and IANA time-zone calculator.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TemporalCalculator;
+
+/// A shorthand wall-clock conversion such as `1am pst`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeQuery {
+    time: NaiveTime,
+    from: Tz,
+    to: Tz,
+}
+
+/// Display-ready local clock conversion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeConversion {
+    /// Source clock value.
+    pub input_time: String,
+    /// Converted clock value.
+    pub output_time: String,
+    /// Active abbreviation in the source zone.
+    pub from_zone: String,
+    /// Active abbreviation in the destination zone.
+    pub to_zone: String,
+    /// Signed calendar-day difference from source to destination.
+    pub day_offset: i64,
+}
+
+impl TimeQuery {
+    /// Parse a clock and source zone, defaulting the destination to the user's local zone.
+    #[must_use]
+    pub fn parse(input: &str, default_to: &str) -> Option<Self> {
+        let fields = input.split_whitespace().collect::<Vec<_>>();
+        let (clock, from, to) = match fields.as_slice() {
+            [clock, from] => ((*clock).to_owned(), *from, default_to),
+            [number, period, from]
+                if matches!(period.to_ascii_lowercase().as_str(), "am" | "pm") =>
+            {
+                (format!("{number}{period}"), *from, default_to)
+            }
+            [clock, from, separator, to]
+                if matches!(separator.to_ascii_lowercase().as_str(), "to" | "in") =>
+            {
+                ((*clock).to_owned(), *from, *to)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            time: parse_clock(&clock)?,
+            from: parse_zone(from)?,
+            to: parse_zone(to)?,
+        })
+    }
+
+    /// Convert the parsed time on the current date in its source zone.
+    ///
+    /// # Errors
+    /// Returns daylight-saving ambiguity or range errors rather than guessing.
+    pub fn convert(&self) -> Result<TimeConversion, TemporalError> {
+        let source_date = Utc::now().with_timezone(&self.from).date_naive();
+        let local = source_date.and_time(self.time);
+        let source = match self.from.from_local_datetime(&local) {
+            LocalResult::Single(value) => value,
+            LocalResult::Ambiguous(_, _) => return Err(TemporalError::AmbiguousTime),
+            LocalResult::None => return Err(TemporalError::NonexistentTime),
+        };
+        let output = source.with_timezone(&self.to);
+        Ok(TimeConversion {
+            input_time: format_clock(source.time()),
+            output_time: format_clock(output.time()),
+            from_zone: source.format("%Z").to_string(),
+            to_zone: output.format("%Z").to_string(),
+            day_offset: (output.date_naive() - source.date_naive()).num_days(),
+        })
+    }
+}
+
+fn parse_clock(value: &str) -> Option<NaiveTime> {
+    let value = value.trim().to_ascii_lowercase();
+    if let Some((clock, afternoon)) = value
+        .strip_suffix("am")
+        .map(|clock| (clock, false))
+        .or_else(|| value.strip_suffix("pm").map(|clock| (clock, true)))
+    {
+        let mut fields = clock.split(':');
+        let hour = fields.next()?.parse::<u32>().ok()?;
+        let minute = fields.next().map_or(Some(0), |value| value.parse().ok())?;
+        if fields.next().is_some() || !(1..=12).contains(&hour) {
+            return None;
+        }
+        let hour = hour % 12 + u32::from(afternoon) * 12;
+        return NaiveTime::from_hms_opt(hour, minute, 0);
+    }
+    NaiveTime::parse_from_str(&value, "%H:%M").ok()
+}
+
+fn parse_zone(value: &str) -> Option<Tz> {
+    let normalized = match value.trim().to_ascii_lowercase().as_str() {
+        "pst" | "pdt" | "pt" => "America/Los_Angeles",
+        "mst" | "mdt" | "mt" => "America/Denver",
+        "cst" | "cdt" | "ct" => "America/Chicago",
+        "est" | "edt" | "et" => "America/New_York",
+        "gmt" | "utc" => "UTC",
+        "ist" => "Asia/Kolkata",
+        "bst" => "Europe/London",
+        "cet" | "cest" => "Europe/Paris",
+        "jst" => "Asia/Tokyo",
+        "aest" | "aedt" => "Australia/Sydney",
+        _ => value,
+    };
+    normalized.parse().ok()
+}
+
+fn format_clock(time: NaiveTime) -> String {
+    time.format("%-I:%M %p").to_string()
+}
 
 impl TemporalCalculator {
     /// Add signed days, weeks, or workdays to an ISO date.
@@ -220,5 +332,13 @@ mod tests {
         let hours = TemporalCalculator::timespan("1d 12h", TimeSpanUnit::Hours).expect("hours");
         assert!((hours - 36.0).abs() < f64::EPSILON);
         assert!(TemporalCalculator::timespan("2 parsecs", TimeSpanUnit::Seconds).is_err());
+    }
+
+    #[test]
+    fn shorthand_clock_times_convert_to_the_local_zone() {
+        let query = TimeQuery::parse("1am pst", "Asia/Kolkata").expect("time query");
+        let converted = query.convert().expect("conversion");
+        assert_eq!(converted.output_time, "1:30 PM");
+        assert_eq!(converted.to_zone, "IST");
     }
 }

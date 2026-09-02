@@ -240,6 +240,17 @@ impl PaletteModel {
         }
     }
 
+    /// Replace pre-ranked results without reordering them.
+    ///
+    /// Catalog surfaces use this after performing their own domain-specific search.
+    pub fn replace_entries_ordered(&mut self, entries: Vec<PaletteEntry>) {
+        self.entries = entries;
+        self.matches = (0..self.entries.len()).collect();
+        self.selected = 0;
+        self.mode = PaletteMode::Results;
+        self.selected_action = 0;
+    }
+
     /// Apply persisted ranking metadata to an entry and rerank the current query.
     pub fn update_preference(
         &mut self,
@@ -480,5 +491,24 @@ mod tests {
         }
         assert_eq!(model.selected_entry().unwrap().id, "clipboard");
         assert!(!model.update_preference("missing", None, false, 0));
+    }
+
+    #[test]
+    fn ordered_replacement_preserves_catalog_order() {
+        let mut ordered = entries();
+        ordered.swap(0, 2);
+        let expected = ordered
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>();
+        let mut model = PaletteModel::new(Vec::new());
+        model.replace_entries_ordered(ordered);
+        assert_eq!(
+            model
+                .results()
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }

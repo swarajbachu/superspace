@@ -75,6 +75,58 @@ impl CurrencyQuery {
             to: parse_asset(to)?,
         })
     }
+
+    /// Parse a shorthand amount such as `1usd` using a caller-provided local currency.
+    ///
+    /// Shorthand only recognizes common fiat and crypto tickers so partial input such
+    /// as `1us` does not trigger a network conversion while the user is still typing.
+    #[must_use]
+    pub fn parse_with_default(input: &str, default_to: &str) -> Option<Self> {
+        if let Some(query) = Self::parse(input) {
+            return Some(query);
+        }
+        let fields = input.split_whitespace().collect::<Vec<_>>();
+        let (amount, from) = match fields.as_slice() {
+            [compact] => parse_compact_amount(compact)?,
+            [first, second] => parse_amount(first)
+                .map(|amount| (amount, *second))
+                .or_else(|| parse_amount(second).map(|amount| (amount, *first)))?,
+            _ => return None,
+        };
+        let from = parse_asset(from)?;
+        if !is_common_asset(&from) {
+            return None;
+        }
+        let to = parse_asset(default_to)?;
+        (from != to).then_some(Self { amount, from, to })
+    }
+}
+
+fn is_common_asset(asset: &AssetCode) -> bool {
+    matches!(
+        asset.as_str(),
+        "USD"
+            | "EUR"
+            | "GBP"
+            | "INR"
+            | "JPY"
+            | "CAD"
+            | "AUD"
+            | "CHF"
+            | "CNY"
+            | "KRW"
+            | "BRL"
+            | "MXN"
+            | "SGD"
+            | "HKD"
+            | "NZD"
+            | "AED"
+            | "SAR"
+            | "RUB"
+            | "ZAR"
+            | "BTC"
+            | "ETH"
+    )
 }
 
 fn parse_amount(value: &str) -> Option<Decimal> {
@@ -296,5 +348,12 @@ mod tests {
         assert_eq!(CurrencyQuery::parse("2 + 2"), None);
         assert_eq!(CurrencyQuery::parse("USD to EUR"), None);
         assert_eq!(CurrencyQuery::parse("USD ten in INR"), None);
+        assert_eq!(
+            CurrencyQuery::parse_with_default("1usd", "INR")
+                .expect("default conversion")
+                .to,
+            AssetCode::parse("INR").expect("INR")
+        );
+        assert_eq!(CurrencyQuery::parse_with_default("1us", "INR"), None);
     }
 }
