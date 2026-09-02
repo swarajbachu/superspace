@@ -2334,10 +2334,10 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
             .into_any_element();
     }
     if entry.id == "fallback:web" {
-        return brand_icon("icons/google.svg", px(20.0));
+        return brand_icon("icons/google.svg", px(20.0), hsla(0.60, 0.75, 0.56, 1.0));
     }
     if entry.id == "fallback:files" {
-        return brand_icon("icons/finder.svg", px(24.0));
+        return brand_icon("icons/finder.svg", px(22.0), hsla(0.56, 0.78, 0.56, 1.0));
     }
     let path = match entry.id.as_str() {
         "builtin:clipboard" => "icons/clipboard.svg",
@@ -2380,20 +2380,20 @@ fn tool_icon_tile(
         .rounded(px(8.0))
         .bg(linear_gradient(
             135.0,
-            linear_color_stop(background.opacity(0.92), 0.0),
-            linear_color_stop(hsla(0.83, 0.72, 0.36, 1.0), 1.0),
+            linear_color_stop(background, 0.0),
+            linear_color_stop(hsla(0.77, 0.66, 0.35, 1.0), 1.0),
         ))
         .child(svg().path(path).size(icon_size).text_color(gpui::white()))
         .into_any_element()
 }
 
-fn brand_icon(path: &'static str, icon_size: gpui::Pixels) -> AnyElement {
+fn brand_icon(path: &'static str, icon_size: gpui::Pixels, color: gpui::Hsla) -> AnyElement {
     div()
         .size(px(28.0))
         .flex()
         .items_center()
         .justify_center()
-        .child(svg().path(path).size(icon_size))
+        .child(svg().path(path).size(icon_size).text_color(color))
         .into_any_element()
 }
 
