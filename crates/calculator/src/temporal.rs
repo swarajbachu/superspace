@@ -73,6 +73,12 @@ impl TimeQuery {
             {
                 ((*clock).to_owned(), *from, *to)
             }
+            [number, period, from, separator, to]
+                if matches!(period.to_ascii_lowercase().as_str(), "am" | "pm")
+                    && matches!(separator.to_ascii_lowercase().as_str(), "to" | "in") =>
+            {
+                (format!("{number}{period}"), *from, *to)
+            }
             _ => return None,
         };
         Some(Self {
