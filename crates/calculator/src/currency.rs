@@ -51,23 +51,80 @@ impl CurrencyQuery {
     #[must_use]
     pub fn parse(input: &str) -> Option<Self> {
         let fields = input.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 4 || !matches!(fields[2].to_ascii_lowercase().as_str(), "to" | "in") {
-            return None;
-        }
-        let amount_first = Decimal::from_str(&fields[0].replace(',', ""));
-        let (amount, from) = match amount_first {
-            Ok(amount) => (amount, fields[1]),
-            Err(_) => (
-                Decimal::from_str(&fields[1].replace(',', "")).ok()?,
-                fields[0],
-            ),
+        let (amount, from, to) = match fields.as_slice() {
+            [value, separator, to]
+                if matches!(separator.to_ascii_lowercase().as_str(), "to" | "in") =>
+            {
+                let (amount, from) = parse_compact_amount(value)?;
+                (amount, from, *to)
+            }
+            [first, second, separator, to]
+                if matches!(separator.to_ascii_lowercase().as_str(), "to" | "in") =>
+            {
+                let amount_first = parse_amount(first);
+                match amount_first {
+                    Some(amount) => (amount, *second, *to),
+                    None => (parse_amount(second)?, *first, *to),
+                }
+            }
+            _ => return None,
         };
         Some(Self {
             amount,
-            from: AssetCode::parse(from).ok()?,
-            to: AssetCode::parse(fields[3]).ok()?,
+            from: parse_asset(from)?,
+            to: parse_asset(to)?,
         })
     }
+}
+
+fn parse_amount(value: &str) -> Option<Decimal> {
+    Decimal::from_str(&value.replace(',', "")).ok()
+}
+
+fn parse_asset(value: &str) -> Option<AssetCode> {
+    let code = match value.trim().to_ascii_lowercase().as_str() {
+        "$" | "usd" | "dollar" | "dollars" => "USD",
+        "€" | "eur" | "euro" | "euros" => "EUR",
+        "£" | "gbp" | "pound" | "pounds" => "GBP",
+        "¥" | "jpy" | "yen" => "JPY",
+        "₹" | "inr" | "rupee" | "rupees" => "INR",
+        "₩" | "krw" | "won" => "KRW",
+        "₽" | "rub" | "ruble" | "rubles" => "RUB",
+        "₿" | "btc" | "bitcoin" => "BTC",
+        _ => value,
+    };
+    AssetCode::parse(code).ok()
+}
+
+fn parse_compact_amount(value: &str) -> Option<(Decimal, &str)> {
+    const SYMBOLS: &[char] = &['$', '€', '£', '¥', '₹', '₩', '₽', '₿'];
+    if let Some(symbol) = value.chars().next().filter(|value| SYMBOLS.contains(value)) {
+        return Some((
+            parse_amount(&value[symbol.len_utf8()..])?,
+            &value[..symbol.len_utf8()],
+        ));
+    }
+    if let Some(symbol) = value
+        .chars()
+        .next_back()
+        .filter(|value| SYMBOLS.contains(value))
+    {
+        let split = value.len() - symbol.len_utf8();
+        return Some((parse_amount(&value[..split])?, &value[split..]));
+    }
+    let split = value
+        .char_indices()
+        .find_map(|(index, character)| character.is_ascii_digit().then_some(index))?;
+    if split > 0 {
+        return Some((parse_amount(&value[split..])?, &value[..split]));
+    }
+    let split = value
+        .char_indices()
+        .find_map(|(index, character)| character.is_ascii_alphabetic().then_some(index))?;
+    if split == 0 {
+        return None;
+    }
+    Some((parse_amount(&value[..split])?, &value[split..]))
 }
 
 impl fmt::Display for AssetCode {
@@ -226,6 +283,15 @@ mod tests {
         assert_eq!(natural_order.amount, Decimal::TEN);
         assert_eq!(natural_order.from.as_str(), "USD");
         assert_eq!(natural_order.to.as_str(), "INR");
+
+        let symbol = CurrencyQuery::parse("$5 in inr").expect("symbol currency query");
+        assert_eq!(symbol.amount, Decimal::from(5));
+        assert_eq!(symbol.from.as_str(), "USD");
+        assert_eq!(symbol.to.as_str(), "INR");
+
+        let named = CurrencyQuery::parse("10 dollars to rupees").expect("named currency query");
+        assert_eq!(named.from.as_str(), "USD");
+        assert_eq!(named.to.as_str(), "INR");
 
         assert_eq!(CurrencyQuery::parse("2 + 2"), None);
         assert_eq!(CurrencyQuery::parse("USD to EUR"), None);
