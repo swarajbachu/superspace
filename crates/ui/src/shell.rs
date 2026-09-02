@@ -5,9 +5,9 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, AnyElement, App, AppContext as _, BoxShadow, ClipboardItem, Context, Entity,
     FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, UniformListScrollHandle, Window, div, hsla, img, point, px, svg,
-    uniform_list,
+    ListAlignment, ListState, ParentElement as _, Render, ScrollHandle,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, hsla, img, list,
+    point, px, svg,
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue, TimeQuery};
 use superspace_core::LauncherPreferences;
@@ -35,8 +35,8 @@ enum PaletteSurface {
     Currency,
 }
 
-const EMOJI_COLUMNS: usize = 12;
-const EMOJI_COLUMN_DELTA: isize = 12;
+const EMOJI_COLUMNS: usize = 8;
+const EMOJI_COLUMN_DELTA: isize = 8;
 const CURRENCY_PREFIXES: &[&str] = &[
     "u", "us", "e", "eu", "g", "gb", "i", "in", "j", "jp", "c", "ca", "a", "au", "b", "bt", "et",
 ];
@@ -48,6 +48,74 @@ enum ClipboardFilter {
     Text,
     Images,
     Files,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EmojiCategory {
+    #[default]
+    All,
+    SmileysAndPeople,
+    AnimalsAndNature,
+    FoodAndDrink,
+    TravelAndPlaces,
+    Activities,
+    Objects,
+    Symbols,
+    Flags,
+}
+
+impl EmojiCategory {
+    const ALL: [Self; 9] = [
+        Self::All,
+        Self::SmileysAndPeople,
+        Self::AnimalsAndNature,
+        Self::FoodAndDrink,
+        Self::TravelAndPlaces,
+        Self::Activities,
+        Self::Objects,
+        Self::Symbols,
+        Self::Flags,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::SmileysAndPeople => "Smileys & People",
+            Self::AnimalsAndNature => "Animals & Nature",
+            Self::FoodAndDrink => "Food & Drink",
+            Self::TravelAndPlaces => "Travel & Places",
+            Self::Activities => "Activities",
+            Self::Objects => "Objects",
+            Self::Symbols => "Symbols",
+            Self::Flags => "Flags",
+        }
+    }
+
+    const fn tag(self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::SmileysAndPeople => Some("emoji-group:smileys-people"),
+            Self::AnimalsAndNature => Some("emoji-group:animals-nature"),
+            Self::FoodAndDrink => Some("emoji-group:food-drink"),
+            Self::TravelAndPlaces => Some("emoji-group:travel-places"),
+            Self::Activities => Some("emoji-group:activities"),
+            Self::Objects => Some("emoji-group:objects"),
+            Self::Symbols => Some("emoji-group:symbols"),
+            Self::Flags => Some("emoji-group:flags"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum EmojiRow {
+    Header { label: &'static str, count: usize },
+    Tiles(Vec<usize>),
+}
+
+impl EmojiRow {
+    fn contains_entry(&self, index: usize) -> bool {
+        matches!(self, Self::Tiles(indices) if indices.contains(&index))
+    }
 }
 
 impl ClipboardFilter {
@@ -96,7 +164,10 @@ pub struct Palette {
     focus: FocusHandle,
     search_input: Entity<SearchInput>,
     results_scroll: ScrollHandle,
-    emoji_scroll: UniformListScrollHandle,
+    emoji_scroll: ListState,
+    emoji_rows: Vec<EmojiRow>,
+    emoji_category: EmojiCategory,
+    emoji_category_open: bool,
     surface: PaletteSurface,
     notice: Option<String>,
     application_count: usize,
@@ -127,7 +198,7 @@ impl Palette {
     ) -> Self {
         let search_input = cx.new(SearchInput::new);
         let results_scroll = ScrollHandle::new();
-        let emoji_scroll = UniformListScrollHandle::new();
+        let emoji_scroll = ListState::new(0, ListAlignment::Top, px(120.0));
         let focus = search_input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let locale = superspace_platform::locale_defaults();
@@ -191,7 +262,6 @@ impl Palette {
             palette.notice = None;
             palette.refresh_results(cx);
             palette.results_scroll.scroll_to_item(0);
-            palette.emoji_scroll.scroll_to_item(0, ScrollStrategy::Top);
             cx.notify();
         })
         .detach();
@@ -202,6 +272,9 @@ impl Palette {
             search_input,
             results_scroll,
             emoji_scroll,
+            emoji_rows: Vec::new(),
+            emoji_category: EmojiCategory::default(),
+            emoji_category_open: false,
             surface: PaletteSurface::Launcher,
             notice: None,
             application_count,
@@ -306,10 +379,7 @@ impl Palette {
             };
             if let Some(offset) = offset {
                 self.model.move_selection_by(offset);
-                self.emoji_scroll.scroll_to_item(
-                    self.model.selected_index() / EMOJI_COLUMNS,
-                    ScrollStrategy::Nearest,
-                );
+                self.reveal_selected_emoji();
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -587,8 +657,18 @@ impl Palette {
             return;
         }
         if self.surface == PaletteSurface::Emoji {
-            self.model
-                .replace_entries_ordered(MiniTools::emoji_entries(self.model.query()));
+            let mut entries = MiniTools::emoji_entries(self.model.query());
+            if let Some(tag) = self.emoji_category.tag() {
+                entries.retain(|entry| {
+                    !entry
+                        .keywords
+                        .iter()
+                        .any(|keyword| keyword == "emoji-group:frequent")
+                        && entry.keywords.iter().any(|keyword| keyword == tag)
+                });
+            }
+            self.model.replace_entries_ordered(entries);
+            self.rebuild_emoji_rows();
             return;
         }
         if self.surface == PaletteSurface::Currency {
@@ -706,6 +786,7 @@ impl Palette {
     ) {
         self.surface = surface;
         self.clipboard_filter_open = false;
+        self.emoji_category_open = false;
         self.notice = None;
         let placeholder = match surface {
             PaletteSurface::Launcher => "Search apps, files, and tools…",
@@ -716,8 +797,23 @@ impl Palette {
         self.search_input
             .update(cx, |input, cx| input.reset(placeholder, cx));
         self.results_scroll.scroll_to_item(0);
-        self.emoji_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh_results(cx);
+    }
+
+    fn rebuild_emoji_rows(&mut self) {
+        let entries = self.model.results().collect::<Vec<_>>();
+        self.emoji_rows = build_emoji_rows(&entries, self.model.query());
+        self.emoji_scroll.reset(self.emoji_rows.len());
+    }
+
+    fn reveal_selected_emoji(&self) {
+        if let Some(row) = self
+            .emoji_rows
+            .iter()
+            .position(|row| row.contains_entry(self.model.selected_index()))
+        {
+            self.emoji_scroll.scroll_to_reveal_item(row);
+        }
     }
 
     fn refresh_currency(&mut self, cx: &mut Context<Self>) {
@@ -803,12 +899,13 @@ impl Render for Palette {
         let action_mode = self.model.mode() == PaletteMode::Actions;
         if self.surface == PaletteSurface::Emoji && !action_mode {
             return emoji_view(
-                self.model.results().count(),
                 selected.as_ref(),
                 self.search_input.clone(),
-                &self.emoji_scroll,
+                self.emoji_scroll.clone(),
                 &self.focus,
                 self.focused_text_target,
+                self.emoji_category,
+                self.emoji_category_open,
                 colors,
                 cx,
             );
@@ -1045,32 +1142,88 @@ impl Render for Palette {
     }
 }
 
+fn build_emoji_rows(entries: &[&PaletteEntry], query: &str) -> Vec<EmojiRow> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    if !query.trim().is_empty() {
+        let mut rows = vec![EmojiRow::Header {
+            label: "Search Results",
+            count: entries.len(),
+        }];
+        rows.extend(
+            (0..entries.len())
+                .collect::<Vec<_>>()
+                .chunks(EMOJI_COLUMNS)
+                .map(|indices| EmojiRow::Tiles(indices.to_vec())),
+        );
+        return rows;
+    }
+
+    let sections = [
+        ("emoji-group:frequent", "Frequently Used"),
+        ("emoji-group:smileys-people", "Smileys & People"),
+        ("emoji-group:animals-nature", "Animals & Nature"),
+        ("emoji-group:food-drink", "Food & Drink"),
+        ("emoji-group:travel-places", "Travel & Places"),
+        ("emoji-group:activities", "Activities"),
+        ("emoji-group:objects", "Objects"),
+        ("emoji-group:symbols", "Symbols"),
+        ("emoji-group:flags", "Flags"),
+    ];
+    let mut rows = Vec::new();
+    for (tag, label) in sections {
+        let indices = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let frequent = entry
+                    .keywords
+                    .iter()
+                    .any(|keyword| keyword == "emoji-group:frequent");
+                let matches = entry.keywords.iter().any(|keyword| keyword == tag);
+                (matches && (tag == "emoji-group:frequent" || !frequent)).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if indices.is_empty() {
+            continue;
+        }
+        rows.push(EmojiRow::Header {
+            label,
+            count: indices.len(),
+        });
+        rows.extend(
+            indices
+                .chunks(EMOJI_COLUMNS)
+                .map(|indices| EmojiRow::Tiles(indices.to_vec())),
+        );
+    }
+    rows
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "emoji picker is a focused surface with explicit dependencies"
 )]
 fn emoji_view(
-    entry_count: usize,
     selected: Option<&PaletteEntry>,
     search_input: Entity<SearchInput>,
-    results_scroll: &UniformListScrollHandle,
+    results_scroll: ListState,
     focus: &FocusHandle,
     focused_text_target: bool,
+    category: EmojiCategory,
+    category_open: bool,
     colors: theme::Theme,
     cx: &mut Context<Palette>,
 ) -> AnyElement {
-    let section_title = if search_input.read(cx).text().trim().is_empty() {
-        "All Emoji & Symbols"
-    } else {
-        "Search Results"
-    };
     let selected_name =
         selected.map_or("Choose an emoji or symbol", |entry| entry.subtitle.as_str());
-    let row_count = entry_count.div_ceil(EMOJI_COLUMNS);
+    let has_entries = selected.is_some();
 
     div()
         .id("emoji-picker")
+        .relative()
         .size_full()
         .flex()
         .flex_col()
@@ -1089,21 +1242,22 @@ fn emoji_view(
         .on_key_down(cx.listener(Palette::key_down))
         .child(
             div()
-                .h(px(50.0))
-                .px(px(12.0))
+                .h(px(56.0))
+                .px(px(14.0))
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap(px(8.0))
                 .border_b_1()
                 .border_color(colors.divider)
                 .child(
                     div()
                         .id("emoji-back")
-                        .size(px(28.0))
+                        .size(px(30.0))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(7.0))
+                        .rounded(px(9.0))
+                        .bg(colors.surface)
                         .hover(move |button| button.bg(colors.hovered))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.enter_surface(PaletteSurface::Launcher, window, cx);
@@ -1115,100 +1269,107 @@ fn emoji_view(
                                 .text_color(colors.text),
                         ),
                 )
-                .child(div().h(px(36.0)).min_w_0().flex_1().child(search_input))
+                .child(div().h(px(38.0)).min_w_0().flex_1().child(search_input))
                 .child(
                     div()
+                        .id("emoji-category-trigger")
+                        .w(px(180.0))
+                        .h(px(34.0))
+                        .px(px(10.0))
                         .flex()
                         .items_center()
-                        .text_size(px(10.0))
-                        .text_color(colors.muted)
-                        .child(format!("{entry_count} items")),
+                        .justify_between()
+                        .rounded(px(9.0))
+                        .border_1()
+                        .border_color(colors.divider)
+                        .bg(colors.surface)
+                        .text_size(px(12.0))
+                        .text_color(colors.text)
+                        .hover(move |trigger| trigger.bg(colors.hovered))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.emoji_category_open = !this.emoji_category_open;
+                            cx.notify();
+                        }))
+                        .child(category.label())
+                        .child(
+                            div()
+                                .text_size(px(14.0))
+                                .text_color(colors.muted)
+                                .child("⌄"),
+                        ),
                 ),
         )
         .child(
             div()
                 .flex_1()
                 .min_h_0()
-                .px(px(12.0))
+                .px(px(14.0))
                 .pt(px(7.0))
                 .pb(px(6.0))
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .h(px(22.0))
-                        .px(px(2.0))
-                        .flex()
+                .when(!has_entries, |body| {
+                    body.flex()
                         .items_center()
-                        .text_size(px(10.0))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .justify_center()
+                        .text_size(px(12.0))
                         .text_color(colors.muted)
-                        .child(section_title),
-                )
-                .child(
-                    div()
-                        .id("emoji-grid-scroll")
-                        .flex_1()
-                        .min_h_0()
-                        .when(entry_count == 0, |grid| {
-                            grid.flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(12.0))
-                                .text_color(colors.muted)
-                                .child("No emoji or symbols match that search")
-                        })
-                        .when(entry_count > 0, |grid| {
-                            grid.child(
-                                uniform_list(
-                                    "emoji-grid",
-                                    row_count,
-                                    cx.processor(
-                                        move |this, rows: std::ops::Range<usize>, _, cx| {
-                                            let first_entry = rows.start * EMOJI_COLUMNS;
-                                            let visible_entries = this
-                                                .model
-                                                .results()
-                                                .skip(first_entry)
-                                                .take((rows.end - rows.start) * EMOJI_COLUMNS)
-                                                .cloned()
-                                                .collect::<Vec<_>>();
-                                            let selected_index = this.model.selected_index();
-                                            rows.enumerate()
-                                                .map(|(row_offset, _row)| {
-                                                    let start = row_offset * EMOJI_COLUMNS;
-                                                    let end = (start + EMOJI_COLUMNS)
-                                                        .min(visible_entries.len());
-                                                    div()
-                                                        .h(px(44.0))
-                                                        .pb(px(4.0))
-                                                        .grid()
-                                                        .grid_cols(12)
-                                                        .gap(px(4.0))
-                                                        .children((start..end).map(|offset| {
-                                                            let index = first_entry + offset;
-                                                            emoji_tile(
-                                                                index,
-                                                                &visible_entries[offset],
-                                                                index == selected_index,
-                                                                colors,
-                                                                cx,
-                                                            )
-                                                        }))
-                                                })
-                                                .collect::<Vec<_>>()
-                                        },
-                                    ),
-                                )
-                                .size_full()
-                                .track_scroll(results_scroll),
-                            )
-                        }),
-                ),
+                        .child("No emoji or symbols match that search")
+                })
+                .when(has_entries, |body| {
+                    body.child(
+                        list(
+                            results_scroll,
+                            cx.processor(move |this, row_index: usize, _, cx| {
+                                let Some(row) = this.emoji_rows.get(row_index).cloned() else {
+                                    return div().into_any_element();
+                                };
+                                match row {
+                                    EmojiRow::Header { label, count } => div()
+                                        .h(px(38.0))
+                                        .pt(px(8.0))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.0))
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(label)
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::NORMAL)
+                                                .text_color(colors.muted)
+                                                .child(count.to_string()),
+                                        )
+                                        .into_any_element(),
+                                    EmojiRow::Tiles(indices) => {
+                                        let selected_index = this.model.selected_index();
+                                        div()
+                                            .h(px(82.0))
+                                            .pb(px(8.0))
+                                            .grid()
+                                            .grid_cols(8)
+                                            .gap(px(8.0))
+                                            .children(indices.into_iter().filter_map(|index| {
+                                                let entry =
+                                                    this.model.results().nth(index)?.clone();
+                                                Some(emoji_tile(
+                                                    index,
+                                                    &entry,
+                                                    index == selected_index,
+                                                    colors,
+                                                    cx,
+                                                ))
+                                            }))
+                                            .into_any_element()
+                                    }
+                                }
+                            }),
+                        )
+                        .size_full(),
+                    )
+                }),
         )
         .child(
             div()
-                .h(px(36.0))
+                .h(px(40.0))
                 .px(px(12.0))
                 .border_t_1()
                 .border_color(colors.divider)
@@ -1221,9 +1382,23 @@ fn emoji_view(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(7.0))
-                        .child(line_icon("icons/smile.svg", colors, px(16.0)))
-                        .child(selected_name.to_owned()),
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .size(px(20.0))
+                                .rounded(px(6.0))
+                                .bg(colors.tool_icon)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    svg()
+                                        .path("icons/smile.svg")
+                                        .size(px(13.0))
+                                        .text_color(hsla(0.0, 0.0, 1.0, 0.96)),
+                                ),
+                        )
+                        .child(format!("Emoji & Symbols · {selected_name}")),
                 )
                 .child(
                     div()
@@ -1231,13 +1406,61 @@ fn emoji_view(
                         .items_center()
                         .gap(px(7.0))
                         .child(if focused_text_target {
-                            "Insert"
+                            "Paste to active app"
                         } else {
-                            "Copy"
+                            "Copy to Clipboard"
                         })
                         .child(keycap("↵", colors)),
                 ),
         )
+        .when(category_open, |picker| {
+            picker.child(
+                div()
+                    .id("emoji-category-menu")
+                    .absolute()
+                    .top(px(50.0))
+                    .right(px(14.0))
+                    .w(px(180.0))
+                    .p(px(4.0))
+                    .rounded(px(10.0))
+                    .bg(colors.background)
+                    .border_1()
+                    .border_color(colors.divider)
+                    .shadow(vec![BoxShadow {
+                        color: colors.shadow,
+                        offset: point(px(0.0), px(8.0)),
+                        blur_radius: px(22.0),
+                        spread_radius: px(-4.0),
+                        inset: false,
+                    }])
+                    .children(
+                        EmojiCategory::ALL
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, option)| {
+                                div()
+                                    .id(("emoji-category-option", index))
+                                    .h(px(30.0))
+                                    .px(px(8.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .rounded(px(6.0))
+                                    .text_size(px(12.0))
+                                    .when(option == category, |row| row.bg(colors.selected))
+                                    .hover(move |row| row.bg(colors.hovered))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.emoji_category = option;
+                                        this.emoji_category_open = false;
+                                        this.refresh_results(cx);
+                                        cx.notify();
+                                    }))
+                                    .child(option.label())
+                                    .child(if option == category { "✓" } else { "" })
+                            }),
+                    ),
+            )
+        })
         .into_any_element()
 }
 
@@ -1250,29 +1473,24 @@ fn emoji_tile(
 ) -> AnyElement {
     div()
         .id(("emoji-tile", index))
-        .h(px(40.0))
+        .h(px(74.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
-        .text_size(px(23.0))
+        .rounded(px(9.0))
+        .bg(colors.surface)
+        .text_size(px(30.0))
         .when(selected, |tile| {
             tile.bg(colors.selected)
-                .border_1()
-                .border_color(colors.accent.opacity(0.60))
+                .border_2()
+                .border_color(colors.accent.opacity(0.78))
         })
         .hover(move |tile| tile.bg(colors.hovered))
-        .on_click(
-            cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                if event.click_count() >= 2 {
-                    let palette_event = this.model.invoke(index);
-                    this.handle_event(palette_event, window, cx);
-                } else {
-                    this.model.select(index);
-                }
-                cx.notify();
-            }),
-        )
+        .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
+            let palette_event = this.model.invoke(index);
+            this.handle_event(palette_event, window, cx);
+            cx.notify();
+        }))
         .child(entry.title.clone())
         .into_any_element()
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use superspace_emoji::search as search_emoji;
+use superspace_emoji::{Group as EmojiGroup, search as search_emoji};
 use superspace_productivity::{
     Item, ItemContent, ProductivityStore, resolve_command, resolve_quicklink, search_symbols,
 };
@@ -80,6 +80,7 @@ impl MiniTools {
                     .copied()
                     .chain([emoji.name])
                     .map(str::to_owned)
+                    .chain([emoji_group_tag(emoji.group).to_owned()])
                     .collect(),
                 preview: format!("Copy {}", emoji.name),
                 frequency: 0,
@@ -91,6 +92,20 @@ impl MiniTools {
                 }],
             })
             .collect::<Vec<_>>();
+        if query.trim().is_empty() {
+            let frequent = [
+                "😀", "😂", "❤️", "👍", "🎉", "🚀", "✅", "🔥", "👀", "🙏", "😭", "😊", "🤞", "💸",
+                "💯", "✨",
+            ]
+            .into_iter()
+            .filter_map(|value| entries.iter().find(|entry| entry.title == value).cloned())
+            .map(|mut entry| {
+                entry.keywords.push("emoji-group:frequent".into());
+                entry
+            })
+            .collect::<Vec<_>>();
+            entries.splice(0..0, frequent);
+        }
         entries.extend(search_symbols(query, 150).into_iter().map(|symbol| {
             PaletteEntry {
                 id: format!("symbol:{}", symbol.value),
@@ -104,6 +119,7 @@ impl MiniTools {
                     .copied()
                     .chain([symbol.name])
                     .map(str::to_owned)
+                    .chain(["emoji-group:symbols".to_owned()])
                     .collect(),
                 preview: format!("Copy {}", symbol.name),
                 frequency: 0,
@@ -153,6 +169,19 @@ impl MiniTools {
             .spawn()
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+}
+
+const fn emoji_group_tag(group: EmojiGroup) -> &'static str {
+    match group {
+        EmojiGroup::SmileysAndEmotion | EmojiGroup::PeopleAndBody => "emoji-group:smileys-people",
+        EmojiGroup::AnimalsAndNature => "emoji-group:animals-nature",
+        EmojiGroup::FoodAndDrink => "emoji-group:food-drink",
+        EmojiGroup::TravelAndPlaces => "emoji-group:travel-places",
+        EmojiGroup::Activities => "emoji-group:activities",
+        EmojiGroup::Objects => "emoji-group:objects",
+        EmojiGroup::Symbols => "emoji-group:symbols",
+        EmojiGroup::Flags => "emoji-group:flags",
     }
 }
 
