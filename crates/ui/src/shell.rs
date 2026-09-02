@@ -36,6 +36,10 @@ enum PaletteSurface {
 }
 
 const EMOJI_COLUMNS: usize = 12;
+const EMOJI_COLUMN_DELTA: isize = 12;
+const CURRENCY_PREFIXES: &[&str] = &[
+    "u", "us", "e", "eu", "g", "gb", "i", "in", "j", "jp", "c", "ca", "a", "au", "b", "bt", "et",
+];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ClipboardFilter {
@@ -296,8 +300,8 @@ impl Palette {
         }
         if self.surface == PaletteSurface::Emoji && self.model.mode() == PaletteMode::Results {
             let offset = match key {
-                PaletteKey::Up => Some(-(EMOJI_COLUMNS as isize)),
-                PaletteKey::Down => Some(EMOJI_COLUMNS as isize),
+                PaletteKey::Up => Some(-EMOJI_COLUMN_DELTA),
+                PaletteKey::Down => Some(EMOJI_COLUMN_DELTA),
                 _ => None,
             };
             if let Some(offset) = offset {
@@ -652,7 +656,7 @@ impl Palette {
                 kind: PaletteEntryKind::Calculation,
                 icon: None,
                 keywords: vec![query.clone(), "calculator".into()],
-                preview: "Press Enter to copy the result".into(),
+                preview: "Calculation".into(),
                 frequency: u32::MAX,
                 favorite: true,
                 actions: vec![ActionItem {
@@ -1742,6 +1746,10 @@ fn result_row(
         .into_any_element()
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the two-column calculation card is clearest as one declarative tree"
+)]
 fn calculation_row(
     index: usize,
     entry: PaletteEntry,
@@ -1749,15 +1757,25 @@ fn calculation_row(
     colors: theme::Theme,
     cx: &mut Context<Palette>,
 ) -> AnyElement {
+    let icon = entry_icon(&entry, colors);
+    let action_label = if entry.actions.is_empty() {
+        "Keep typing"
+    } else {
+        "Copy"
+    };
     div()
         .id(("calculation-row", index))
-        .h(px(48.0))
-        .px(px(8.0))
+        .h(px(72.0))
+        .px(px(12.0))
         .flex()
         .items_center()
-        .gap(px(9.0))
-        .rounded(px(8.0))
-        .when(selected, |row| row.bg(colors.selected))
+        .gap(px(12.0))
+        .rounded(px(10.0))
+        .bg(if selected {
+            colors.selected
+        } else {
+            colors.surface
+        })
         .hover(move |row| {
             row.bg(if selected {
                 colors.selected
@@ -1776,39 +1794,68 @@ fn calculation_row(
                 cx.notify();
             }),
         )
-        .child(line_icon("icons/calculator.svg", colors, px(18.0)))
+        .child(icon)
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(9.0))
+                .gap(px(14.0))
                 .child(
                     div()
+                        .w(px(210.0))
                         .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(12.0))
-                        .text_color(colors.muted)
-                        .child(entry.subtitle),
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(15.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(entry.subtitle),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(9.0))
+                                .text_color(colors.muted)
+                                .child("INPUT"),
+                        ),
                 )
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(px(16.0))
                         .text_color(colors.muted)
                         .child("→"),
                 )
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_size(px(15.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(entry.title),
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(17.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(entry.title),
+                        )
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(9.0))
+                                .text_color(colors.muted)
+                                .child(entry.preview),
+                        ),
                 ),
         )
         .child(
@@ -1816,7 +1863,7 @@ fn calculation_row(
                 .flex_shrink_0()
                 .text_size(px(11.0))
                 .text_color(colors.muted)
-                .child("Copy result"),
+                .child(action_label),
         )
         .into_any_element()
 }
@@ -1909,12 +1956,12 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
     }
     let path = match entry.id.as_str() {
         "builtin:clipboard" => "icons/clipboard.svg",
-        "tool:currency" => "icons/coins.svg",
+        "tool:currency" | "currency:loading" | "currency:result" | "intent:currency" => {
+            "icons/coins.svg"
+        }
         "tool:emoji" => "icons/smile.svg",
         "tool:uuid" => "icons/hash.svg",
-        "tool:timestamp" => "icons/clock.svg",
-        "intent:currency" => "icons/coins.svg",
-        "intent:time" | "time:result" => "icons/clock.svg",
+        "tool:timestamp" | "intent:time" | "time:result" => "icons/clock.svg",
         "intent:calculation" => "icons/calculator.svg",
         _ => match entry.kind {
             PaletteEntryKind::File => "icons/file.svg",
@@ -2004,12 +2051,12 @@ fn is_renderable_image(path: &Path) -> bool {
 fn currency_loading_entry(query: &CurrencyQuery, input: &str) -> PaletteEntry {
     PaletteEntry {
         id: "currency:loading".into(),
-        title: format!("Fetching {} → {}…", query.from, query.to),
-        subtitle: "Checking the latest exchange rate".into(),
+        title: format!("Converting to {}…", query.to),
+        subtitle: format!("{} {}", query.amount, query.from),
         kind: PaletteEntryKind::Calculation,
         icon: None,
         keywords: vec![input.to_owned()],
-        preview: "Live currency conversion".into(),
+        preview: "Fetching the latest rate".into(),
         frequency: 100,
         favorite: true,
         actions: Vec::new(),
@@ -2030,7 +2077,7 @@ fn currency_result_entry(result: &Conversion, input: &str) -> PaletteEntry {
     PaletteEntry {
         id: "currency:result".into(),
         title: format!("{value} {}", result.query.to),
-        subtitle: format!("{} {} · {observed}", result.query.amount, result.query.from),
+        subtitle: format!("{} {}", result.query.amount, result.query.from),
         kind: PaletteEntryKind::Calculation,
         icon: None,
         keywords: vec![
@@ -2038,7 +2085,7 @@ fn currency_result_entry(result: &Conversion, input: &str) -> PaletteEntry {
             result.query.from.to_string(),
             result.query.to.to_string(),
         ],
-        preview: "Press Enter to copy the converted amount".into(),
+        preview: observed,
         frequency: u32::MAX,
         favorite: true,
         actions: vec![ActionItem {
@@ -2074,10 +2121,6 @@ fn tool_intent(query: &str) -> Option<ToolIntent> {
     let suffix = query
         .trim_start_matches(|character: char| character.is_ascii_digit() || character == '.')
         .trim();
-    const CURRENCY_PREFIXES: &[&str] = &[
-        "u", "us", "e", "eu", "g", "gb", "i", "in", "j", "jp", "c", "ca", "a", "au", "b", "bt",
-        "et",
-    ];
     (!suffix.is_empty() && CURRENCY_PREFIXES.contains(&suffix)).then_some(ToolIntent::Currency)
 }
 
