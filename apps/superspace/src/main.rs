@@ -820,30 +820,6 @@ fn no_more(mut arguments: impl Iterator<Item = String>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::clipboard_watcher_lock;
-
-    #[test]
-    fn clipboard_watcher_lock_allows_only_one_service() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let first = clipboard_watcher_lock(directory.path())
-            .expect("first lock")
-            .expect("lock available");
-        assert!(
-            clipboard_watcher_lock(directory.path())
-                .expect("second lock attempt")
-                .is_none()
-        );
-        drop(first);
-        assert!(
-            clipboard_watcher_lock(directory.path())
-                .expect("released lock")
-                .is_some()
-        );
-    }
-}
-
 fn productivity_database() -> PathBuf {
     data_root().join("productivity.sqlite")
 }
@@ -911,5 +887,29 @@ fn launch_app(id: &str) -> Result<()> {
 fn print_features() {
     for feature in builtin_features() {
         println!("{:?}\t{}\t{}", feature.area, feature.id, feature.title);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clipboard_watcher_lock;
+
+    #[test]
+    fn clipboard_watcher_lock_allows_only_one_service() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let first = clipboard_watcher_lock(directory.path())
+            .expect("first lock")
+            .expect("lock available");
+        assert!(
+            clipboard_watcher_lock(directory.path())
+                .expect("second lock attempt")
+                .is_none()
+        );
+        drop(first);
+        assert!(
+            clipboard_watcher_lock(directory.path())
+                .expect("released lock")
+                .is_some()
+        );
     }
 }

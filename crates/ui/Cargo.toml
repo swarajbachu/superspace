@@ -18,6 +18,7 @@ superspace-core = { path = "../core" }
 superspace-emoji = { path = "../emoji" }
 superspace-calculator = { path = "../calculator" }
 superspace-files = { path = "../files" }
+superspace-network = { path = "../network" }
 superspace-platform = { path = "../platform" }
 superspace-productivity = { path = "../productivity" }
 superspace-storage = { path = "../storage" }
@@ -29,6 +30,7 @@ serde_json.workspace = true
 unicode-segmentation.workspace = true
 ureq.workspace = true
 uuid.workspace = true
+tokio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 icns.workspace = true

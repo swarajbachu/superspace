@@ -71,7 +71,7 @@ pub fn install(cx: &mut App) {
 /// Resolve semantic colors for a built-in theme.
 #[must_use]
 pub fn for_kind(kind: ThemeKind) -> Theme {
-    match kind {
+    let mut theme = match kind {
         ThemeKind::Graphite => Theme {
             background: hsla(0.64, 0.08, 0.07, 0.80),
             surface: hsla(0.0, 0.0, 1.0, 0.075),
@@ -111,7 +111,12 @@ pub fn for_kind(kind: ThemeKind) -> Theme {
             shadow: hsla(0.66, 0.10, 0.12, 0.26),
             divider: hsla(0.66, 0.08, 0.22, 0.12),
         },
+    };
+    #[cfg(target_os = "linux")]
+    if std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session.eq_ignore_ascii_case("x11")) {
+        theme.background.a = 1.0;
     }
+    theme
 }
 
 #[cfg(test)]

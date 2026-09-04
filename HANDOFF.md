@@ -58,6 +58,9 @@ the feature contract currently marks only the two fully verified calculator line
   retention, source attribution, sensitive markers, excluded-app policy, and loop suppression.
 - Stable owner-only local device identity, Noise XX pairing with a mutually verified six-digit code,
   trusted-device enable/revoke/forget lifecycle, and pinned mutual TLS 1.3 over QUIC.
+- GPUI Nearby workspace with continuous mDNS advertisement/browsing, automatically discovered LAN
+  computers, in-app pairing and code confirmation, trusted-device controls, clipboard-session
+  controls, and native file/folder picker actions. Manual IP entry remains as a multicast fallback.
 - Manual bidirectional paired clipboard runtime for text and images, including deterministic conflict
   ordering, acknowledgement, offline ledger behavior, content-addressed blobs, resume, and integrity
   verification.
@@ -79,9 +82,11 @@ the feature contract currently marks only the two fully verified calculator line
 - AI provider models and streaming decoders exist as an early foundation, but the user explicitly
   deferred all AI-layer work. Do not resume it until requested.
 
-## Current manual cross-device workflow
+## Current cross-device workflow
 
-The exact pairing and clipboard commands are in [`README.md`](README.md). In short:
+The desktop workflow is primary: open **Nearby Sharing** on both devices, start pairing on one,
+select its automatically discovered row on the other, confirm the matching code, then use the
+controls on the paired row. Diagnostic CLI commands remain in [`README.md`](README.md). In short:
 
 1. Run `superspace nearby identity` on both devices.
 2. Run `pair-listen` on one and `pair-connect` on the other.
@@ -94,28 +99,26 @@ The file workflow was integration-tested on 2026-08-31 between two isolated pair
 loopback: a nested two-file folder transferred, acknowledged, and matched the source contents. A
 physical Mac/Linux LAN run is still required.
 
-This is deliberately a manual diagnostic workflow. Production behavior must start discovery and sync
-inside the desktop application, reconnect automatically, restore pending events after process
-restart, and expose status/errors in GPUI.
+Discovery and pairing now run inside the desktop application. Clipboard/file sessions are supervised
+by the Nearby workspace, but production behavior must still reconnect automatically, restore pending
+events after restart, and expose structured per-transfer progress and errors.
 
 ## Best next implementation sequence
 
-1. Replace manual listener/connector roles with one mDNS-driven service. Resolve trusted device IDs,
-   deduplicate simultaneous connections deterministically, reconnect with bounded backoff, touch
-   `last_seen_at`, and preserve the offline queue across process restarts.
-2. Move the long-running nearby and clipboard services into the desktop composition root. GPUI must
-   receive immutable status/progress events; it must not perform blocking SQLite/network work.
-3. Build clipboard-history and Nearby GPUI surfaces, including drag/drop, device picker, progress,
-   cancellation, retry, trust management, privacy controls, and transfer notifications.
-4. Add native macOS and Linux file-list clipboard adapters, then retain and pair incoming clipboard
+1. Replace UI-supervised one-shot listener/connector processes with one in-process connection
+   manager. Deduplicate simultaneous connections, reconnect with bounded backoff, touch
+   `last_seen_at`, and preserve the offline queue across restarts.
+2. Add structured transfer progress, cancellation, retry, drag/drop, privacy controls, and
+   completion/error notifications to the existing Nearby workspace.
+3. Add native macOS and Linux file-list clipboard adapters, then retain and pair incoming clipboard
    offers with their matching published transfer proof in the session dispatcher.
-5. Complete launcher lifecycle: configurable global/per-command/per-app shortcuts, tray/menu-bar,
+4. Complete launcher lifecycle: configurable global/per-command/per-app shortcuts, tray/menu-bar,
    hide/show behavior, launch at login, onboarding, permissions diagnostics, and updater.
-6. Complete built-in platform actions and productivity UI, then backup/restore and Raycast import.
-7. Finish extension host capabilities and in-app registry/browser.
-8. Add CI, dependency/license/security audits, threat model, release signing, macOS universal app/DMG
+5. Complete built-in platform actions and productivity UI, then backup/restore and Raycast import.
+6. Finish extension host capabilities and in-app registry/browser.
+7. Add CI, dependency/license/security audits, threat model, release signing, macOS universal app/DMG
    and Homebrew cask, plus AppImage/deb/rpm/Arch packaging.
-9. Run physical-device macOS/Linux pairing, clipboard, image, sleep/reconnect, Wi-Fi change, large
+8. Run physical-device macOS/Linux pairing, clipboard, image, sleep/reconnect, Wi-Fi change, large
     file, cancellation, resume, disk-full, and revocation suites. Only then update broad checklist
     lines in `docs/features.md`.
 
@@ -123,20 +126,19 @@ AI remains intentionally outside this sequence until the user re-enables it.
 
 ## Known gaps and cautions
 
-- There is no automatic daemon/tray lifecycle yet; nearby clipboard sessions are foreground CLI
-  processes with manually supplied addresses.
-- File/folder transfer is currently a one-shot foreground CLI workflow. There is no GPUI send flow,
-  native file-list clipboard application, pending offer/transfer rendezvous, background queue, or
-  automatic retry yet. The sync boundary is ready for verified destinations, but the native backend
-  deliberately returns unsupported rather than degrading file lists to text.
+- There is no automatic daemon/tray lifecycle yet. The desktop app discovers peers itself, while
+  active clipboard/file sessions are currently supervised child processes and end with the app.
+- File/folder transfer has a GPUI picker/device flow, but no drag/drop, structured progress,
+  background queue, or automatic retry yet. Native file-list clipboard application and pending
+  offer/transfer rendezvous remain incomplete.
 - Clipboard replication queues are memory-resident; history/trust are durable, but queued per-peer
   acknowledgements must be persisted for real restart reconciliation.
 - Native clipboard support currently reads/writes text and images through `arboard`; rich native
   formats and file-list clipboard semantics require dedicated macOS/X11/Wayland adapters.
 - The GPUI shell performs some discovery/search work synchronously during construction. Move this to
   background services before claiming the architecture's non-blocking-UI invariant.
-- Linux desktop compilation works with the packages in the README. This container cannot perform the
-  final native link without host `xkbcommon`, `xkbcommon-x11`, and XCB libraries.
+- Linux desktop compilation and linking work with the packages in the README; X11 uses an opaque
+  glass-tinted fallback because GPUI's X11 backend cannot request compositor backdrop blur.
 - macOS has not been physically verified. Cross-target compilation alone is not release evidence.
 - No CI, installers, signing/notarization, update feed, visual regression suite, property tests,
   dependency audit policy, secret scanner, or release automation exists yet.

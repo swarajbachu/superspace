@@ -1,5 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -11,9 +16,10 @@ use gpui::{
 };
 use superspace_calculator::{Calculator, CurrencyQuery, ResultValue, TimeQuery};
 use superspace_core::LauncherPreferences;
+use superspace_network::{DiscoveryEvent, NearbyDevice, NearbyDiscovery};
 use superspace_platform::{AppDescriptor, LocaleDefaults};
 use superspace_productivity::resolve_quicklink;
-use superspace_storage::ClipboardKind;
+use superspace_storage::{ClipboardKind, TrustedDevice, TrustedDeviceStore};
 
 use crate::{
     ActionItem, PaletteEntry, PaletteEntryKind, PaletteEvent, PaletteKey, PaletteMode,
@@ -33,6 +39,12 @@ enum PaletteSurface {
     Clipboard,
     Emoji,
     Currency,
+    Nearby,
+}
+
+enum PairingEvent {
+    Code(superspace_network::PairingCode, mpsc::Sender<bool>),
+    Finished(Result<String, String>),
 }
 
 const EMOJI_COLUMNS: usize = 8;
@@ -159,6 +171,10 @@ impl ClipboardFilter {
 }
 
 /// Main command palette state.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent popup and nearby activity flags do not form one state machine"
+)]
 pub struct Palette {
     model: PaletteModel,
     focus: FocusHandle,
@@ -189,9 +205,21 @@ pub struct Palette {
     focused_text_target: bool,
     locale: LocaleDefaults,
     browser_name: String,
+    nearby_devices: Vec<TrustedDevice>,
+    discovered_devices: HashMap<uuid::Uuid, NearbyDevice>,
+    nearby_discovery: Option<NearbyDiscovery>,
+    local_device_id: Option<uuid::Uuid>,
+    pairing_code: Option<String>,
+    pairing_confirmation: Option<mpsc::Sender<bool>>,
+    pairing_active: bool,
+    nearby_processes: Vec<Child>,
 }
 
 impl Palette {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "palette construction keeps persisted feature sources visible in one composition root"
+    )]
     pub(crate) fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -251,7 +279,31 @@ impl Palette {
             "Search, pin, restore, and remove copied items",
             "open-clipboard",
         ));
+        entries.push(builtin_entry(
+            "builtin:nearby",
+            "Nearby Sharing",
+            "Pair devices, sync clipboard, and share files",
+            "open-nearby",
+        ));
         let clipboard = ClipboardHistory::open(&data_root()).ok();
+        let local_identity = superspace_network::LocalIdentity::load_or_create(
+            data_root().join("local-identity.cbor"),
+        )
+        .ok();
+        let local_device_id = local_identity.as_ref().map(|identity| identity.device_id);
+        let nearby_discovery = local_identity.as_ref().and_then(|identity| {
+            NearbyDiscovery::start(
+                identity.device_id,
+                platform_device_name(),
+                &discovery_host_label(identity.device_id),
+                43870,
+                identity.noise.public_key(),
+            )
+            .ok()
+        });
+        let nearby_devices = TrustedDeviceStore::open(data_root().join("trusted-devices.sqlite"))
+            .and_then(|store| store.list())
+            .unwrap_or_default();
         let mut mini_tools = MiniTools::open(&data_root()).ok();
         if let Some(tools) = mini_tools.as_mut()
             && let Ok(tool_entries) = tools.entries("")
@@ -266,6 +318,45 @@ impl Palette {
             palette.refresh_results(cx);
             palette.results_scroll.scroll_to_item(0);
             cx.notify();
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(350))
+                    .await;
+                if this
+                    .update(cx, |palette, cx| {
+                        let mut changed = false;
+                        if let Some(discovery) = &palette.nearby_discovery {
+                            for event in discovery.poll() {
+                                match event {
+                                    DiscoveryEvent::Resolved(device)
+                                        if Some(device.id) != palette.local_device_id =>
+                                    {
+                                        palette.discovered_devices.insert(device.id, device);
+                                        changed = true;
+                                    }
+                                    DiscoveryEvent::Removed(fullname) => {
+                                        if let Some(id) = discovery_id_from_fullname(&fullname) {
+                                            changed |=
+                                                palette.discovered_devices.remove(&id).is_some();
+                                        }
+                                    }
+                                    DiscoveryEvent::Resolved(_) => {}
+                                }
+                            }
+                        }
+                        if changed {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
         })
         .detach();
 
@@ -299,6 +390,14 @@ impl Palette {
             focused_text_target,
             locale,
             browser_name,
+            nearby_devices,
+            discovered_devices: HashMap::new(),
+            nearby_discovery,
+            local_device_id,
+            pairing_code: None,
+            pairing_confirmation: None,
+            pairing_active: false,
+            nearby_processes: Vec::new(),
         }
     }
 
@@ -417,6 +516,9 @@ impl Palette {
             false
         } else if action_id == "open-currency" {
             self.enter_surface(PaletteSurface::Currency, window, cx);
+            false
+        } else if action_id == "open-nearby" {
+            self.enter_surface(PaletteSurface::Nearby, window, cx);
             false
         } else if action_id == "restore-clipboard" {
             match self
@@ -816,11 +918,233 @@ impl Palette {
             PaletteSurface::Clipboard => "Search clipboard history…",
             PaletteSurface::Emoji => "Search emoji and symbols…",
             PaletteSurface::Currency => "Try 100 USD to EUR or 0.1 BTC in USD…",
+            PaletteSurface::Nearby => "Enter a device IP, for example 192.168.1.20…",
         };
         self.search_input
             .update(cx, |input, cx| input.reset(placeholder, cx));
         self.results_scroll.scroll_to_item(0);
         self.refresh_results(cx);
+    }
+
+    fn refresh_nearby_devices(&mut self) {
+        self.nearby_devices = TrustedDeviceStore::open(data_root().join("trusted-devices.sqlite"))
+            .and_then(|store| store.list())
+            .unwrap_or_default();
+    }
+
+    fn start_pairing(
+        &mut self,
+        listen: bool,
+        discovered: Option<SocketAddr>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pairing_active {
+            self.notice = Some("A pairing request is already active".into());
+            return;
+        }
+        let address = if let Some(address) = discovered {
+            Ok(address)
+        } else if listen {
+            "0.0.0.0:43870".parse()
+        } else {
+            nearby_address(self.search_input.read(cx).text(), 43870)
+        };
+        let Ok(address) = address else {
+            self.notice = Some("Enter the other computer's LAN IP first".into());
+            cx.notify();
+            return;
+        };
+        let root = data_root();
+        let (events_tx, events_rx) = mpsc::channel();
+        self.pairing_active = true;
+        self.pairing_code = None;
+        self.notice = Some(if listen {
+            "Waiting for a pairing request on port 43870…".into()
+        } else {
+            format!("Connecting to {address}…")
+        });
+        thread::spawn(move || {
+            let result = run_ui_pairing(&root, listen, address, &events_tx);
+            let _ = events_tx.send(PairingEvent::Finished(result));
+        });
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let mut finished = false;
+                while let Ok(event) = events_rx.try_recv() {
+                    let _ = this.update(cx, |palette, cx| {
+                        match event {
+                            PairingEvent::Code(code, confirmation) => {
+                                palette.pairing_code = Some(code.to_string());
+                                palette.pairing_confirmation = Some(confirmation);
+                                palette.notice = Some("Verify this code on both computers".into());
+                            }
+                            PairingEvent::Finished(result) => {
+                                palette.pairing_active = false;
+                                palette.pairing_code = None;
+                                palette.pairing_confirmation = None;
+                                palette.notice = Some(result.unwrap_or_else(|error| error));
+                                palette.refresh_nearby_devices();
+                                finished = true;
+                            }
+                        }
+                        cx.notify();
+                    });
+                }
+                if finished {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn confirm_pairing(&mut self, approved: bool, cx: &mut Context<Self>) {
+        if let Some(confirmation) = self.pairing_confirmation.take() {
+            let _ = confirmation.send(approved);
+            self.notice = Some(if approved {
+                "Waiting for the other computer to confirm…".into()
+            } else {
+                "Pairing rejected".into()
+            });
+            cx.notify();
+        }
+    }
+
+    fn toggle_nearby_device(&mut self, id: uuid::Uuid, cx: &mut Context<Self>) {
+        let enabled = self
+            .nearby_devices
+            .iter()
+            .find(|device| device.id == id)
+            .is_some_and(|device| !device.enabled);
+        match TrustedDeviceStore::open(data_root().join("trusted-devices.sqlite"))
+            .and_then(|store| store.set_enabled(id, enabled))
+        {
+            Ok(true) => {
+                self.notice = Some(
+                    if enabled {
+                        "Device enabled"
+                    } else {
+                        "Device paused"
+                    }
+                    .into(),
+                );
+                self.refresh_nearby_devices();
+            }
+            _ => self.notice = Some("Could not update the paired device".into()),
+        }
+        cx.notify();
+    }
+
+    fn forget_nearby_device(&mut self, id: uuid::Uuid, cx: &mut Context<Self>) {
+        let result = TrustedDeviceStore::open(data_root().join("trusted-devices.sqlite"))
+            .and_then(|store| store.remove(id));
+        self.notice = Some(if matches!(result, Ok(true)) {
+            "Device forgotten".into()
+        } else {
+            "Could not forget the paired device".into()
+        });
+        self.refresh_nearby_devices();
+        cx.notify();
+    }
+
+    fn start_nearby_process(
+        &mut self,
+        action: &str,
+        peer_id: uuid::Uuid,
+        listen: bool,
+        discovered: Option<SocketAddr>,
+        cx: &mut Context<Self>,
+    ) {
+        let port = if action == "clipboard" { 43871 } else { 43872 };
+        let address = if listen {
+            format!("0.0.0.0:{port}")
+        } else if let Some(mut address) = discovered {
+            address.set_port(port);
+            address.to_string()
+        } else {
+            let Ok(address) = nearby_address(self.search_input.read(cx).text(), port) else {
+                self.notice = Some("Enter the other computer's LAN IP first".into());
+                cx.notify();
+                return;
+            };
+            address.to_string()
+        };
+        let command = match (action, listen) {
+            ("clipboard", true) => "clipboard-listen",
+            ("clipboard", false) => "clipboard-connect",
+            ("file", true) => "file-listen",
+            _ => return,
+        };
+        let executable = match std::env::current_exe() {
+            Ok(executable) => executable,
+            Err(error) => {
+                self.notice = Some(format!("Could not locate Superspace: {error}"));
+                return;
+            }
+        };
+        match Command::new(executable)
+            .args([
+                "nearby",
+                command,
+                &address,
+                &peer_id.to_string(),
+                "Superspace",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => {
+                self.nearby_processes.push(child);
+                self.notice = Some(match (action, listen) {
+                    ("clipboard", true) => "Clipboard receiver is ready".into(),
+                    ("clipboard", false) => "Clipboard sync connected".into(),
+                    _ => "Ready to receive one file or folder".into(),
+                });
+            }
+            Err(error) => self.notice = Some(format!("Could not start nearby sharing: {error}")),
+        }
+        cx.notify();
+    }
+
+    fn send_nearby_path(
+        &mut self,
+        peer_id: uuid::Uuid,
+        folder: bool,
+        discovered: Option<SocketAddr>,
+        cx: &mut Context<Self>,
+    ) {
+        let address = discovered.map(|mut address| {
+            address.set_port(43872);
+            address
+        });
+        let address = address.map_or_else(
+            || nearby_address(self.search_input.read(cx).text(), 43872),
+            Ok,
+        );
+        let Ok(address) = address else {
+            self.notice = Some("Enter the other computer's LAN IP first".into());
+            cx.notify();
+            return;
+        };
+        self.notice = Some("Choose what to send…".into());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { send_path_with_picker(address, peer_id, folder) })
+                .await;
+            let _ = this.update(cx, |palette, cx| {
+                palette.notice = Some(result.unwrap_or_else(|error| error));
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn rebuild_emoji_rows(&mut self) {
@@ -961,6 +1285,20 @@ impl Render for Palette {
                 cx,
             );
         }
+        if self.surface == PaletteSurface::Nearby {
+            return nearby_view(
+                &self.nearby_devices,
+                &self.discovered_devices,
+                self.local_device_id,
+                self.pairing_code.as_deref(),
+                self.pairing_active,
+                self.notice.clone(),
+                self.search_input.clone(),
+                &self.focus,
+                colors,
+                cx,
+            );
+        }
         let fallback_results = !matches.is_empty()
             && matches
                 .iter()
@@ -982,6 +1320,7 @@ impl Render for Palette {
                 PaletteSurface::Clipboard => "Clipboard History",
                 PaletteSurface::Emoji => "Emoji & Symbols",
                 PaletteSurface::Currency => "Currency & Crypto",
+                PaletteSurface::Nearby => "Nearby Sharing",
                 PaletteSurface::Launcher => unreachable!(),
             }
             .into()
@@ -1055,6 +1394,9 @@ impl Render for Palette {
                     PaletteSurface::Clipboard => format!("{} clipboard items", matches.len()),
                     PaletteSurface::Emoji => format!("{} items", matches.len()),
                     PaletteSurface::Currency => "Live rates · cached for offline use".into(),
+                    PaletteSurface::Nearby => {
+                        format!("{} paired devices", self.nearby_devices.len())
+                    }
                     PaletteSurface::Launcher => unreachable!(),
                 }
             } else if self.model.query().is_empty() {
@@ -1566,6 +1908,328 @@ fn emoji_tile(
         }))
         .child(entry.title.clone())
         .into_any_element()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "Nearby is a self-contained workspace with explicit state inputs"
+)]
+fn nearby_view(
+    devices: &[TrustedDevice],
+    discovered: &HashMap<uuid::Uuid, NearbyDevice>,
+    local_id: Option<uuid::Uuid>,
+    pairing_code: Option<&str>,
+    pairing_active: bool,
+    notice: Option<String>,
+    search_input: Entity<SearchInput>,
+    focus: &FocusHandle,
+    colors: theme::Theme,
+    cx: &mut Context<Palette>,
+) -> AnyElement {
+    let trusted_ids = devices
+        .iter()
+        .map(|device| device.id)
+        .collect::<HashSet<_>>();
+    let mut unpaired = discovered
+        .values()
+        .filter(|device| !trusted_ids.contains(&device.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    unpaired.sort_by(|left, right| left.name.cmp(&right.name));
+    let discovered_rows = unpaired.into_iter().filter_map(|device| {
+        let address = *device.addresses.first()?;
+        Some(
+            div()
+                .id(device.id.to_string())
+                .w_full()
+                .p(px(12.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(colors.accent.opacity(0.35))
+                .bg(colors.surface)
+                .child(tool_icon_tile("icons/nearby.svg", colors.accent, px(16.0)))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(device.name),
+                        )
+                        .child(
+                            div()
+                                .mt(px(2.0))
+                                .text_size(px(10.0))
+                                .text_color(colors.muted)
+                                .child(format!("Discovered automatically · {address}")),
+                        ),
+                )
+                .child(nearby_button("Pair", colors).on_click(
+                    cx.listener(move |this, _, _, cx| this.start_pairing(false, Some(address), cx)),
+                )),
+        )
+    });
+    let device_rows = devices.iter().map(|device| {
+        let id = device.id;
+        let toggle_id = id;
+        let forget_id = id;
+        let sync_id = id;
+        let receive_id = id;
+        let send_file_id = id;
+        let send_folder_id = id;
+        let receive_file_id = id;
+        let discovered_address = discovered
+            .get(&id)
+            .and_then(|device| device.addresses.first())
+            .copied();
+        let sync_address = discovered_address;
+        let send_file_address = discovered_address;
+        let send_folder_address = discovered_address;
+        div()
+            .id(id.to_string())
+            .w_full()
+            .p(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .rounded(px(12.0))
+            .bg(colors.surface)
+            .child(tool_icon_tile(
+                "icons/nearby.svg",
+                colors.tool_icon,
+                px(16.0),
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(device.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .mt(px(2.0))
+                            .text_size(px(10.0))
+                            .text_color(colors.muted)
+                            .child(if device.enabled {
+                                format!("Trusted · {}", device.id)
+                            } else {
+                                "Sharing paused".into()
+                            }),
+                    ),
+            )
+            .child(nearby_button("Receive clip", colors).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.start_nearby_process("clipboard", receive_id, true, None, cx);
+                },
+            )))
+            .child(nearby_button("Sync clip", colors).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.start_nearby_process("clipboard", sync_id, false, sync_address, cx);
+                },
+            )))
+            .child(nearby_button("Send file", colors).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.send_nearby_path(send_file_id, false, send_file_address, cx);
+                },
+            )))
+            .child(nearby_button("Send folder", colors).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.send_nearby_path(send_folder_id, true, send_folder_address, cx);
+                },
+            )))
+            .child(nearby_button("Receive file", colors).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.start_nearby_process("file", receive_file_id, true, None, cx);
+                },
+            )))
+            .child(
+                nearby_button(if device.enabled { "Pause" } else { "Enable" }, colors).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.toggle_nearby_device(toggle_id, cx);
+                    }),
+                ),
+            )
+            .child(
+                nearby_button("Forget", colors).on_click(cx.listener(move |this, _, _, cx| {
+                    this.forget_nearby_device(forget_id, cx);
+                })),
+            )
+    });
+
+    div()
+        .id("nearby-workspace")
+        .size_full()
+        .relative()
+        .flex()
+        .flex_col()
+        .bg(colors.background)
+        .text_color(colors.text)
+        .rounded(px(20.0))
+        .overflow_hidden()
+        .track_focus(focus)
+        .on_key_down(cx.listener(Palette::key_down))
+        .child(
+            div()
+                .h(px(58.0))
+                .px(px(14.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .border_b_1()
+                .border_color(colors.divider)
+                .child(
+                    div()
+                        .id("nearby-back")
+                        .size(px(32.0))
+                        .rounded(px(8.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(move |button| button.bg(colors.hovered))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.enter_surface(PaletteSurface::Launcher, window, cx);
+                        }))
+                        .child(line_icon("icons/back.svg", colors, px(17.0))),
+                )
+                .child(div().w(px(230.0)).child(search_input))
+                .child(
+                    nearby_button("Pair this computer", colors).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.start_pairing(true, None, cx);
+                        },
+                    )),
+                )
+                .child(nearby_button("Connect to IP", colors).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.start_pairing(false, None, cx);
+                    },
+                ))),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .p(px(16.0))
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .child(
+                                    div()
+                                        .text_size(px(15.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Nearby Sharing"),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(3.0))
+                                        .text_size(px(10.0))
+                                        .text_color(colors.muted)
+                                        .child(local_id.map_or_else(
+                                            || "Local identity unavailable".into(),
+                                            |id| format!("This device · {id}"),
+                                        )),
+                                ),
+                        )
+                        .when_some(pairing_code.map(str::to_owned), |header, code| {
+                            header.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .px(px(12.0))
+                                            .py(px(7.0))
+                                            .rounded(px(8.0))
+                                            .bg(colors.selected)
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(code),
+                                    )
+                                    .child(nearby_button("Confirm", colors).on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.confirm_pairing(true, cx);
+                                        },
+                                    )))
+                                    .child(nearby_button("Reject", colors).on_click(cx.listener(
+                                        |this, _, _, cx| this.confirm_pairing(false, cx),
+                                    ))),
+                            )
+                        }),
+                )
+                .child(div().text_size(px(11.0)).text_color(colors.muted).child(
+                    notice.unwrap_or_else(|| {
+                        if pairing_active {
+                            "Pairing in progress…".into()
+                        } else {
+                            "Enter the other computer's IP above, or wait for it to connect.".into()
+                        }
+                    }),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .when(devices.is_empty() && discovered.is_empty(), |panel| {
+                            panel.flex().items_center().justify_center().child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(colors.muted)
+                                    .child("No paired computers yet"),
+                            )
+                        })
+                        .children(discovered_rows)
+                        .children(device_rows),
+                ),
+        )
+        .child(
+            div()
+                .h(px(40.0))
+                .px(px(14.0))
+                .border_t_1()
+                .border_color(colors.divider)
+                .flex()
+                .items_center()
+                .justify_between()
+                .text_size(px(10.0))
+                .text_color(colors.muted)
+                .child("Encrypted directly over your local network")
+                .child("Pairing 43870 · Clipboard 43871 · Files 43872"),
+        )
+        .into_any_element()
+}
+
+fn nearby_button(label: &'static str, colors: theme::Theme) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(label)
+        .px(px(10.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(colors.divider)
+        .bg(colors.surface)
+        .text_size(px(10.0))
+        .hover(move |button| button.bg(colors.hovered))
 }
 
 #[allow(
@@ -2341,6 +3005,7 @@ fn entry_icon(entry: &PaletteEntry, colors: theme::Theme) -> AnyElement {
     }
     let path = match entry.id.as_str() {
         "builtin:clipboard" => "icons/clipboard.svg",
+        "builtin:nearby" => "icons/nearby.svg",
         "tool:currency" | "currency:loading" | "currency:result" | "intent:currency" => {
             "icons/coins.svg"
         }
@@ -2569,6 +3234,7 @@ const fn empty_title(surface: PaletteSurface) -> &'static str {
         PaletteSurface::Currency => "Type a conversion",
         PaletteSurface::Emoji => "No emoji or symbol found",
         PaletteSurface::Clipboard => "No clipboard items",
+        PaletteSurface::Nearby => "No paired devices",
         PaletteSurface::Launcher => "No matches found",
     }
 }
@@ -2578,6 +3244,7 @@ const fn empty_hint(surface: PaletteSurface) -> &'static str {
         PaletteSurface::Currency => "Example: 100 USD to EUR",
         PaletteSurface::Emoji => "Try a feeling, object, or symbol",
         PaletteSurface::Clipboard => "Copy something and it will appear here",
+        PaletteSurface::Nearby => "Pair a Mac or Linux computer on your local network",
         PaletteSurface::Launcher => "Try an app name or a file keyword",
     }
 }
@@ -2627,6 +3294,157 @@ fn prepare_icon(path: &str) -> Option<PathBuf> {
         return convert_icns(&path);
     }
     None
+}
+
+fn nearby_address(input: &str, default_port: u16) -> Result<SocketAddr, std::net::AddrParseError> {
+    let input = input.trim();
+    if input.contains(':') {
+        input.parse()
+    } else {
+        format!("{input}:{default_port}").parse()
+    }
+}
+
+fn platform_device_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Superspace Mac"
+    } else {
+        "Superspace Linux"
+    }
+}
+
+fn discovery_host_label(id: uuid::Uuid) -> String {
+    format!("superspace-{}", &id.simple().to_string()[..12])
+}
+
+fn discovery_id_from_fullname(fullname: &str) -> Option<uuid::Uuid> {
+    fullname.split('.').next()?.parse().ok()
+}
+
+fn run_ui_pairing(
+    root: &Path,
+    listen: bool,
+    address: SocketAddr,
+    events: &mpsc::Sender<PairingEvent>,
+) -> Result<String, String> {
+    let identity =
+        superspace_network::LocalIdentity::load_or_create(root.join("local-identity.cbor"))
+            .map_err(|error| error.to_string())?;
+    let info = superspace_network::PairingPublicInfo::for_local(&identity, "Superspace");
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    let event_sender = events.clone();
+    let peer = runtime
+        .block_on(async {
+            let pairing = async {
+                if listen {
+                    let listener = tokio::net::TcpListener::bind(address).await?;
+                    let (mut stream, _) = listener.accept().await?;
+                    superspace_network::pair_incoming(&mut stream, &identity, &info, move |code| {
+                        pairing_confirmation(code, event_sender)
+                    })
+                    .await
+                    .map_err(anyhow::Error::from)
+                } else {
+                    let mut stream = tokio::net::TcpStream::connect(address).await?;
+                    superspace_network::pair_outgoing(&mut stream, &identity, &info, move |code| {
+                        pairing_confirmation(code, event_sender)
+                    })
+                    .await
+                    .map_err(anyhow::Error::from)
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(5 * 60), pairing)
+                .await
+                .map_err(|_| anyhow::anyhow!("Pairing timed out"))?
+        })
+        .map_err(|error| format!("Pairing failed: {error}"))?;
+    let peer_name = peer.info.name.clone();
+    TrustedDeviceStore::open(root.join("trusted-devices.sqlite"))
+        .and_then(|store| {
+            store.upsert(&TrustedDevice {
+                id: peer.info.device_id,
+                name: peer.info.name,
+                noise_public_key: peer.noise_public_key,
+                certificate_der: peer.info.certificate_der,
+                paired_at: chrono::Utc::now().timestamp_millis(),
+                last_seen_at: None,
+                enabled: true,
+            })
+        })
+        .map_err(|error| format!("Could not save paired device: {error}"))?;
+    Ok(format!("Paired with {peer_name}"))
+}
+
+async fn pairing_confirmation(
+    code: superspace_network::PairingCode,
+    events: mpsc::Sender<PairingEvent>,
+) -> bool {
+    let (confirmation, decision) = mpsc::channel();
+    if events.send(PairingEvent::Code(code, confirmation)).is_err() {
+        return false;
+    }
+    tokio::task::spawn_blocking(move || decision.recv().unwrap_or(false))
+        .await
+        .unwrap_or(false)
+}
+
+fn send_path_with_picker(
+    address: SocketAddr,
+    peer_id: uuid::Uuid,
+    folder: bool,
+) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    let output = {
+        let mut command = Command::new("zenity");
+        command.arg("--file-selection");
+        if folder {
+            command.arg("--directory");
+        }
+        command.output()
+    };
+    #[cfg(target_os = "macos")]
+    let output = Command::new("osascript")
+        .args(if folder {
+            [
+                "-e",
+                "POSIX path of (choose folder with prompt \"Choose a folder to send\")",
+            ]
+        } else {
+            [
+                "-e",
+                "POSIX path of (choose file with prompt \"Choose a file to send\")",
+            ]
+        })
+        .output();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err("File picking is supported only on Linux and macOS".into());
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let output = output.map_err(|error| format!("Could not open the file picker: {error}"))?;
+    if !output.status.success() {
+        return Ok("Sharing cancelled".into());
+    }
+    let path = String::from_utf8(output.stdout)
+        .map_err(|_| "The selected path is not valid UTF-8".to_owned())?;
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok("Sharing cancelled".into());
+    }
+    let status = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+        .args([
+            "nearby",
+            "file-send",
+            &address.to_string(),
+            &peer_id.to_string(),
+            path,
+            "Superspace",
+        ])
+        .status()
+        .map_err(|error| format!("Could not start the transfer: {error}"))?;
+    if status.success() {
+        Ok(format!("Sent {}", Path::new(path).display()))
+    } else {
+        Err("The file transfer failed; make sure the receiver is ready".into())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2698,7 +3516,7 @@ fn fallback_entries(query: &str, browser_name: &str) -> Vec<PaletteEntry> {
     .map(|(id, title, subtitle, action, preview)| PaletteEntry {
         id: id.into(),
         title,
-        subtitle: subtitle.into(),
+        subtitle,
         kind: PaletteEntryKind::Command,
         icon: None,
         keywords: vec![query.into(), preview.into()],

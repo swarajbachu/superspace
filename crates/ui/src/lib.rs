@@ -24,8 +24,8 @@ pub use model::{
 
 #[cfg(feature = "desktop")]
 use gpui::{
-    App, AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions, px, size,
+    App, AppContext as _, Bounds, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
+    WindowKind, WindowOptions, px, size,
 };
 
 /// Start the headed Superspace application.
@@ -46,17 +46,51 @@ pub fn run() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(620.0), px(500.0))),
                     titlebar: None,
-                    window_background: WindowBackgroundAppearance::Blurred,
-                    kind: WindowKind::PopUp,
+                    window_decorations: Some(WindowDecorations::Client),
+                    window_background: platform_window_background(),
+                    kind: platform_window_kind(),
                     is_resizable: false,
                     is_minimizable: false,
                     ..WindowOptions::default()
                 },
-                |window, cx| cx.new(|cx| shell::Palette::new(window, cx, focused_text_target)),
+                |window, cx| {
+                    #[cfg(target_os = "linux")]
+                    window.activate_window();
+                    cx.new(|cx| shell::Palette::new(window, cx, focused_text_target))
+                },
             )
             .expect("open Superspace palette");
             cx.activate(true);
         });
+}
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn platform_window_background() -> WindowBackgroundAppearance {
+    // GPUI's X11 backend has no backdrop-blur protocol, so alpha would expose a sharp, distracting
+    // desktop beneath the palette. Use a fully painted glass tint there; Wayland can request its
+    // compositor blur protocol when available.
+    if std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session.eq_ignore_ascii_case("x11")) {
+        WindowBackgroundAppearance::Opaque
+    } else {
+        WindowBackgroundAppearance::Blurred
+    }
+}
+
+#[cfg(all(feature = "desktop", not(target_os = "linux")))]
+const fn platform_window_background() -> WindowBackgroundAppearance {
+    WindowBackgroundAppearance::Blurred
+}
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+const fn platform_window_kind() -> WindowKind {
+    // PopUp is override-redirect on X11, which prevents GNOME from reliably assigning keyboard
+    // focus. A borderless Normal window remains focusable while preserving the palette shape.
+    WindowKind::Normal
+}
+
+#[cfg(all(feature = "desktop", not(target_os = "linux")))]
+const fn platform_window_kind() -> WindowKind {
+    WindowKind::PopUp
 }
 
 /// Explain how to enable the headed build when compiled without native dependencies.

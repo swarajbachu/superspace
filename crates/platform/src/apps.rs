@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -175,6 +175,8 @@ pub fn discover_apps(roots: &[PathBuf]) -> Result<Vec<AppDescriptor>, AppDiscove
     for root in roots {
         discover_root(root, &mut seen, &mut applications);
     }
+    #[cfg(target_os = "linux")]
+    resolve_linux_icons(&mut applications);
     applications.sort_by(|left, right| {
         left.name
             .to_lowercase()
@@ -182,6 +184,132 @@ pub fn discover_apps(roots: &[PathBuf]) -> Result<Vec<AppDescriptor>, AppDiscove
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(applications)
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_icons(applications: &mut [AppDescriptor]) {
+    let wanted = applications
+        .iter()
+        .filter_map(|application| application.icon.as_deref())
+        .filter(|icon| !Path::new(icon).is_absolute())
+        .map(icon_name)
+        .collect::<HashSet<_>>();
+    if wanted.is_empty() {
+        return;
+    }
+
+    let mut matches = HashMap::<String, (u32, PathBuf)>::new();
+    for root in linux_icon_roots() {
+        index_linux_icons(&root, &wanted, &mut matches, 0);
+    }
+    for application in applications {
+        let Some(icon) = application.icon.as_deref() else {
+            continue;
+        };
+        if Path::new(icon).is_absolute() {
+            if !Path::new(icon).is_file() {
+                application.icon = None;
+            }
+        } else {
+            application.icon = matches
+                .get(&icon_name(icon))
+                .map(|(_, path)| path.to_string_lossy().into_owned());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_icon_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        roots.push(PathBuf::from(data_home).join("icons"));
+    } else if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".local/share/icons"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".icons"));
+    }
+    let data_dirs = std::env::var_os("XDG_DATA_DIRS").map_or_else(
+        || {
+            vec![
+                PathBuf::from("/usr/local/share"),
+                PathBuf::from("/usr/share"),
+            ]
+        },
+        |dirs| std::env::split_paths(&dirs).collect(),
+    );
+    for directory in data_dirs {
+        roots.push(directory.join("icons"));
+        roots.push(directory.join("pixmaps"));
+    }
+    roots
+}
+
+#[cfg(target_os = "linux")]
+fn index_linux_icons(
+    directory: &Path,
+    wanted: &HashSet<String>,
+    matches: &mut HashMap<String, (u32, PathBuf)>,
+    depth: u8,
+) {
+    if depth > 5 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            index_linux_icons(&path, wanted, matches, depth + 1);
+            continue;
+        }
+        let Some(stem) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(icon_name)
+        else {
+            continue;
+        };
+        let supported = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "webp"
+                )
+            });
+        if !supported || !wanted.contains(&stem) {
+            continue;
+        }
+        let score = icon_resolution_score(&path);
+        let candidate = matches.entry(stem).or_insert((score, path.clone()));
+        if score > candidate.0 {
+            *candidate = (score, path);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn icon_name(value: &str) -> String {
+    Path::new(value)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(value)
+        .to_ascii_lowercase()
+}
+
+#[cfg(target_os = "linux")]
+fn icon_resolution_score(path: &Path) -> u32 {
+    path.components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .filter_map(|component| component.split_once('x'))
+        .filter_map(|(width, height)| width.parse::<u32>().ok().zip(height.parse::<u32>().ok()))
+        .filter(|(width, height)| width == height)
+        .map(|(width, _)| width.min(512))
+        .max()
+        .unwrap_or(1)
 }
 
 #[cfg(target_os = "linux")]

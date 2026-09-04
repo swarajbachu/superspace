@@ -21,6 +21,7 @@ impl AssetSource for Icons {
             "icons/browser.svg" => Some(include_bytes!("../assets/icons/browser.svg")),
             "icons/finder.svg" => Some(include_bytes!("../assets/icons/finder.svg")),
             "icons/google.svg" => Some(include_bytes!("../assets/icons/google.svg")),
+            "icons/nearby.svg" => Some(include_bytes!("../assets/icons/nearby.svg")),
             _ => None,
         };
         Ok(bytes.map(Cow::Borrowed))
