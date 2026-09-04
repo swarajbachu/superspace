@@ -418,6 +418,11 @@ impl Palette {
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        if self.surface == PaletteSurface::Nearby && keystroke.key == "enter" {
+            self.start_pairing(false, None, cx);
+            cx.stop_propagation();
+            return;
+        }
         if keystroke.key == "t"
             && keystroke.modifiers.shift
             && (keystroke.modifiers.platform || keystroke.modifiers.control)
@@ -746,6 +751,10 @@ impl Palette {
     fn refresh_results(&mut self, cx: &mut Context<Self>) {
         self.files.clear();
         self.calculations.clear();
+        if self.surface == PaletteSurface::Nearby {
+            self.model.replace_entries(Vec::new());
+            return;
+        }
         if self.surface == PaletteSurface::Clipboard {
             let query = self.model.query().trim().to_owned();
             let entries = self
