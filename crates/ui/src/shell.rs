@@ -927,7 +927,7 @@ impl Palette {
             PaletteSurface::Clipboard => "Search clipboard history…",
             PaletteSurface::Emoji => "Search emoji and symbols…",
             PaletteSurface::Currency => "Try 100 USD to EUR or 0.1 BTC in USD…",
-            PaletteSurface::Nearby => "Enter a device IP, for example 192.168.1.20…",
+            PaletteSurface::Nearby => "Enter IP address…",
         };
         self.search_input
             .update(cx, |input, cx| input.reset(placeholder, cx));
@@ -2130,19 +2130,13 @@ fn nearby_view(
                         }))
                         .child(line_icon("icons/back.svg", colors, px(17.0))),
                 )
-                .child(div().w(px(230.0)).child(search_input))
                 .child(
-                    nearby_button("Pair this computer", colors).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.start_pairing(true, None, cx);
-                        },
-                    )),
-                )
-                .child(nearby_button("Connect to IP", colors).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.start_pairing(false, None, cx);
-                    },
-                ))),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(search_input),
+                ),
         )
         .child(
             div()
@@ -2235,18 +2229,24 @@ fn nearby_view(
         )
         .child(
             div()
-                .h(px(40.0))
-                .flex_none()
-                .px(px(14.0))
-                .border_t_1()
-                .border_color(colors.divider)
+                .absolute()
+                .bottom(px(14.0))
+                .right(px(14.0))
                 .flex()
                 .items_center()
-                .justify_between()
-                .text_size(px(10.0))
-                .text_color(colors.muted)
-                .child("Encrypted directly over your local network")
-                .child("Pairing 43870 · Clipboard 43871 · Files 43872"),
+                .gap(px(8.0))
+                .child(
+                    nearby_button("Pair this computer", colors).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.start_pairing(true, None, cx);
+                        },
+                    )),
+                )
+                .child(nearby_button("Connect to IP", colors).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.start_pairing(false, None, cx);
+                    },
+                ))),
         )
         .into_any_element()
 }
