@@ -2109,6 +2109,7 @@ fn nearby_view(
         .child(
             div()
                 .h(px(58.0))
+                .flex_none()
                 .px(px(14.0))
                 .flex()
                 .items_center()
@@ -2235,6 +2236,7 @@ fn nearby_view(
         .child(
             div()
                 .h(px(40.0))
+                .flex_none()
                 .px(px(14.0))
                 .border_t_1()
                 .border_color(colors.divider)
@@ -2261,6 +2263,7 @@ fn nearby_button(label: &'static str, colors: theme::Theme) -> gpui::Stateful<gp
         .bg(colors.surface)
         .text_size(px(10.0))
         .hover(move |button| button.bg(colors.hovered))
+        .child(label)
 }
 
 #[allow(
