@@ -33,8 +33,9 @@ cargo run -p superspace --features desktop
 ## Nearby sharing in the desktop app
 
 Open **Nearby Sharing** from the Superspace palette on both computers. Superspace advertises and
-browses `_superspace._tcp.local` while the app is open, so computers on the same multicast-capable
-LAN appear automatically. On one computer choose **Pair this computer**; on the discovered row on
+browses `_superspace._tcp.local` while the app is open, with a bounded UDP broadcast fallback on
+port `43869` for LANs that filter multicast. Computers on the same subnet appear automatically. On
+one computer choose **Pair this computer**; on the discovered row on
 the other choose **Pair**, then approve the identical six-digit code on both screens.
 
 Paired rows provide clipboard receive/connect, file/folder sending through the native picker,

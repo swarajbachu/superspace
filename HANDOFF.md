@@ -58,9 +58,10 @@ the feature contract currently marks only the two fully verified calculator line
   retention, source attribution, sensitive markers, excluded-app policy, and loop suppression.
 - Stable owner-only local device identity, Noise XX pairing with a mutually verified six-digit code,
   trusted-device enable/revoke/forget lifecycle, and pinned mutual TLS 1.3 over QUIC.
-- GPUI Nearby workspace with continuous mDNS advertisement/browsing, automatically discovered LAN
-  computers, in-app pairing and code confirmation, trusted-device controls, clipboard-session
-  controls, and native file/folder picker actions. Manual IP entry remains as a multicast fallback.
+- GPUI Nearby workspace with continuous mDNS advertisement/browsing plus a bounded UDP broadcast
+  fallback on port 43869, automatically discovered LAN computers, in-app pairing and code
+  confirmation, trusted-device controls, clipboard-session controls, and native file/folder picker
+  actions. Manual IP entry remains available for isolated networks.
 - Manual bidirectional paired clipboard runtime for text and images, including deterministic conflict
   ordering, acknowledgement, offline ledger behavior, content-addressed blobs, resume, and integrity
   verification.
