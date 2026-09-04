@@ -2005,73 +2005,92 @@ fn nearby_view(
             .w_full()
             .p(px(12.0))
             .flex()
-            .items_center()
-            .gap(px(12.0))
+            .flex_col()
+            .gap(px(10.0))
             .rounded(px(12.0))
             .bg(colors.surface)
-            .child(tool_icon_tile(
-                "icons/nearby.svg",
-                colors.tool_icon,
-                px(16.0),
-            ))
             .child(
                 div()
-                    .min_w_0()
-                    .flex_1()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(tool_icon_tile(
+                        "icons/nearby.svg",
+                        colors.tool_icon,
+                        px(16.0),
+                    ))
                     .child(
                         div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(device.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .mt(px(2.0))
-                            .text_size(px(10.0))
-                            .text_color(colors.muted)
-                            .child(if device.enabled {
-                                format!("Trusted · {}", device.id)
-                            } else {
-                                "Sharing paused".into()
-                            }),
+                            .min_w_0()
+                            .flex_1()
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(device.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(2.0))
+                                    .text_size(px(10.0))
+                                    .text_color(colors.muted)
+                                    .child(if device.enabled {
+                                        format!("Trusted · {}", device.id)
+                                    } else {
+                                        "Sharing paused".into()
+                                    }),
+                            ),
                     ),
             )
-            .child(nearby_button("Receive clip", colors).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.start_nearby_process("clipboard", receive_id, true, None, cx);
-                },
-            )))
-            .child(nearby_button("Sync clip", colors).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.start_nearby_process("clipboard", sync_id, false, sync_address, cx);
-                },
-            )))
-            .child(nearby_button("Send file", colors).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.send_nearby_path(send_file_id, false, send_file_address, cx);
-                },
-            )))
-            .child(nearby_button("Send folder", colors).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.send_nearby_path(send_folder_id, true, send_folder_address, cx);
-                },
-            )))
-            .child(nearby_button("Receive file", colors).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.start_nearby_process("file", receive_file_id, true, None, cx);
-                },
-            )))
             .child(
-                nearby_button(if device.enabled { "Pause" } else { "Enable" }, colors).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.toggle_nearby_device(toggle_id, cx);
-                    }),
-                ),
-            )
-            .child(
-                nearby_button("Forget", colors).on_click(cx.listener(move |this, _, _, cx| {
-                    this.forget_nearby_device(forget_id, cx);
-                })),
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .child(nearby_button("Receive clip", colors).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.start_nearby_process("clipboard", receive_id, true, None, cx);
+                        },
+                    )))
+                    .child(nearby_button("Sync clip", colors).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.start_nearby_process(
+                                "clipboard",
+                                sync_id,
+                                false,
+                                sync_address,
+                                cx,
+                            );
+                        },
+                    )))
+                    .child(nearby_button("Send file", colors).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.send_nearby_path(send_file_id, false, send_file_address, cx);
+                        },
+                    )))
+                    .child(nearby_button("Send folder", colors).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.send_nearby_path(send_folder_id, true, send_folder_address, cx);
+                        },
+                    )))
+                    .child(nearby_button("Receive file", colors).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.start_nearby_process("file", receive_file_id, true, None, cx);
+                        },
+                    )))
+                    .child(
+                        nearby_button(if device.enabled { "Pause" } else { "Enable" }, colors)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_nearby_device(toggle_id, cx);
+                            })),
+                    )
+                    .child(nearby_button("Forget", colors).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.forget_nearby_device(forget_id, cx);
+                        },
+                    ))),
             )
     });
 
@@ -2194,8 +2213,10 @@ fn nearby_view(
                 ))
                 .child(
                     div()
+                        .id("nearby-device-scroll")
                         .flex_1()
                         .min_h_0()
+                        .overflow_y_scroll()
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
@@ -2231,6 +2252,7 @@ fn nearby_view(
 fn nearby_button(label: &'static str, colors: theme::Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(label)
+        .flex_none()
         .px(px(10.0))
         .py(px(6.0))
         .rounded(px(8.0))
